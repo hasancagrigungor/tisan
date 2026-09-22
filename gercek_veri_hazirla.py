@@ -45,7 +45,7 @@ BENCHMARK = {"nab": "TSB-AD-U", "smap": "TSB-AD-M", "msl": "TSB-AD-M", "smd": "T
 LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "smap": "telemanom (Apache-2.0), veri NASA", "msl": "telemanom (Apache-2.0), veri NASA",
           "pump": "belirsiz (Kaggle: unknown)", "smd": "MIT", "cnc": "CC0-1.0",
-          "wind_gearbox": "Apache-2.0"}
+          "wind_gearbox": "Apache-2.0", "hai": "CC-BY-SA-4.0"}
 
 
 def _unix(s):
@@ -128,6 +128,10 @@ def load_nab():
 def load_smap_msl():
     base = RAW / "smap_msl"
     meta = pd.read_csv(base / "labeled_anomalies.csv")
+    # P-2 kanalı dosyada iki satır: anomali aralıkları birleştirilir
+    meta = (meta.assign(anomaly_sequences=meta.anomaly_sequences.map(ast.literal_eval))
+                .groupby("chan_id", as_index=False).agg(spacecraft=("spacecraft", "first"),
+                                                        anomaly_sequences=("anomaly_sequences", lambda x: sum(x, []))))
     for _, r in meta.sort_values(["spacecraft", "chan_id"]).iterrows():
         src = r.spacecraft.lower()
         for split in ("train", "test"):
@@ -136,7 +140,7 @@ def load_smap_msl():
             lab = np.full((T, k), -1 if split == "train" else 0, dtype=np.int8)
             if split == "test":
                 lab[:, 1:] = 0
-                for a, b in ast.literal_eval(r.anomaly_sequences):
+                for a, b in r.anomaly_sequences:
                     lab[a:b + 1, 0] = 1                      # anomali telemetri sütununda
             names = ["telemetry"] + [f"cmd_{i}" for i in range(1, k)]
             yield _seri(f"{src}/{r.chan_id}/{split}", src, "space", _synthetic_time(T, 60.0), X, lab,
@@ -204,6 +208,52 @@ def load_wind_gearbox():
         yield _seri(f"wind_gearbox/{f}", "wind_gearbox", "energy", _unix(d["timestamp"]), d[names].to_numpy(),
                     lab, names, "row", False,
                     note="dişli kutusu SCADA; labeled: 3 olay, complex: etiketsiz (anomali içerebilir)")
+
+
+def load_hai():
+    """HAI (HIL-based Augmented ICS, NSR): kazan/türbin/su arıtma test düzeneği, 1 sn SCADA.
+    Dört sürüm; train dosyaları saldırısız (0), test dosyaları saldırı etiketli.
+    attack_P1..P3 varsa etiket ilgili prosesin sütunlarına yazılır (cell), yoksa satır etiketi."""
+    base = RAW / "hai"
+    for ver in sorted(p.name for p in base.iterdir() if p.is_dir()):
+        for f in sorted((base / ver).glob("*.csv")):
+            if f.name.startswith("label-"):
+                continue
+            sep = ";" if ";" in f.open().readline() else ","
+            d = pd.read_csv(f, sep=sep)
+            d.columns = d.columns.str.strip()
+            tcol = d.columns[0]
+            labcols = [c for c in d.columns if c.lower().startswith("attack")]
+            if not labcols and (f.parent / f.name.replace("hai-", "label-")).exists() and "test" in f.name:
+                lab_df = pd.read_csv(f.parent / f.name.replace("hai-", "label-"))
+                d = d.merge(lab_df, left_on=tcol, right_on="timestamp", how="left", suffixes=("", "_lab"))
+                d["attack"] = d["label"].fillna(0)
+                labcols = ["attack"]
+                d = d.drop(columns=[c for c in ("label", "timestamp_lab") if c in d])
+            names = [c for c in d.columns if c not in labcols and c != tcol and pd.api.types.is_numeric_dtype(d[c])]
+            names = [c for c in names if d[c].std() > 0]                 # sabit sütunlar atılır
+            X = d[names].to_numpy()
+            T, k = X.shape
+            split = "train" if "train" in f.name else "test"
+            if split == "train":
+                lab, level = np.zeros((T, k), dtype=np.int8), "row"
+            else:
+                row = d[labcols[0]].fillna(0).astype(np.int8).to_numpy()
+                per_p = {c[-2:]: d[c].fillna(0).astype(np.int8).to_numpy() for c in labcols if "_P" in c}
+                if per_p:
+                    lab = np.zeros((T, k), dtype=np.int8)
+                    covered = np.zeros(T, dtype=bool)
+                    for pfx, v in per_p.items():
+                        cols = [j for j, n in enumerate(names) if n.startswith(pfx + "_")]
+                        lab[np.ix_(v == 1, cols)] = 1
+                        covered |= v == 1
+                    lab[(row == 1) & ~covered] = 1                       # proses bilgisi olmayan saldırı: tüm sütunlar
+                    level = "cell"
+                else:
+                    lab, level = row, "row"
+            yield _seri(f"hai/{ver}/{f.stem.replace('hai-', '')}", "hai", "process_control", _unix(d[tcol]), X,
+                        lab, names, level, False,
+                        note=f"ICS test düzeneği (kazan/türbin/su); {ver}; train saldırısız")
 
 
 # -----------------------------------------------------------------------------
@@ -296,7 +346,8 @@ def load_lotsa(subset, path):
 
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
-           "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox}
+           "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox,
+           "hai": load_hai}
 
 
 # =============================================================================

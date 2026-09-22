@@ -1,5 +1,8 @@
 # Veri havuzu
 
+Hugging Face kopyası (özel): `cagrigungor/tisan-havuz` — `data/havuz` ile birebir aynı içerik.
+Toplam 12.470 seri, ~65M satır, 15 sektör. Kaynak başına satır: HAI 4.9M, LOTSA 57M, SMD 1.4M, SMAP/MSL 0.7M, wind 0.5M, NAB 0.4M, Pump 0.2M.
+
 ```
 data/
 ├── raw/                 indirilen ham veri (dokunulmaz)
@@ -40,7 +43,8 @@ s["raw"], s["labels"], s["meta"]
 | SMD | 56 | 38 | sentetik 1 dk | hücre, train etiketsiz | MIT | TSB-AD-M |
 | CNC mill | 18 | 47 | 0.1 sn | yok | CC0 | – |
 | Wind gearbox SCADA | 2 | 7 | 10 dk | satır (labeled), yok (complex) | Apache-2.0 | – |
-| LOTSA (105 alt küme) | ~10.000 | 1–çok | değişken | yok | alt kümeye göre | – |
+| HAI 20.07/21.03/22.04/23.05 | 28 | 60–86 | 1 sn | hücre (attack_P1–P3) / satır; train saldırısız | CC-BY-SA-4.0 | – |
+| LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).
