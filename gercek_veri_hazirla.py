@@ -44,7 +44,8 @@ BENCHMARK = {"nab": "TSB-AD-U", "smap": "TSB-AD-M", "msl": "TSB-AD-M", "smd": "T
 
 LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "smap": "telemanom (Apache-2.0), veri NASA", "msl": "telemanom (Apache-2.0), veri NASA",
-          "pump": "belirsiz (Kaggle: unknown)", "smd": "MIT", "cnc": "CC0-1.0"}
+          "pump": "belirsiz (Kaggle: unknown)", "smd": "MIT", "cnc": "CC0-1.0",
+          "wind_gearbox": "Apache-2.0"}
 
 
 def _unix(s):
@@ -193,6 +194,18 @@ def load_cnc():
                          f"görsel={r.passed_visual_inspection}")
 
 
+def load_wind_gearbox():
+    """Rüzgar türbini dişli kutusu SCADA (aiwithcagri, Kaggle): 10 dk, 5 yıl, 7 sensör."""
+    base = RAW / "wind_gearbox"
+    for f in ("labeled", "complex"):
+        d = pd.read_csv(base / f"turbine_5yr_{f}_data.csv")
+        names = [c for c in d.columns if c not in ("timestamp", "is_anomaly")]
+        lab = d["is_anomaly"].astype(np.int8).to_numpy() if "is_anomaly" in d else -1
+        yield _seri(f"wind_gearbox/{f}", "wind_gearbox", "energy", _unix(d["timestamp"]), d[names].to_numpy(),
+                    lab, names, "row", False,
+                    note="dişli kutusu SCADA; labeled: 3 olay, complex: etiketsiz (anomali içerebilir)")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -283,7 +296,7 @@ def load_lotsa(subset, path):
 
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
-           "pump": load_pump, "smd": load_smd, "cnc": load_cnc}
+           "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox}
 
 
 # =============================================================================

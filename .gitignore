@@ -1,5 +1,6 @@
-# veri havuzu ve ham indirmeler depoya girmez
-data/
+# veri havuzu ve ham indirmeler depoya girmez (data/README.md hariç)
+data/*
+!data/README.md
 *.parquet
 *.zip
 *.h5

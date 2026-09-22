@@ -39,6 +39,8 @@ s["raw"], s["labels"], s["meta"]
 | Pump sensor | 1 | 51 | 1 dk | satır (BROKEN+RECOVERING) | belirsiz | – |
 | SMD | 56 | 38 | sentetik 1 dk | hücre, train etiketsiz | MIT | TSB-AD-M |
 | CNC mill | 18 | 47 | 0.1 sn | yok | CC0 | – |
+| Wind gearbox SCADA | 2 | 7 | 10 dk | satır (labeled), yok (complex) | Apache-2.0 | – |
+| LOTSA (105 alt küme) | ~10.000 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).
