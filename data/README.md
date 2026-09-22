@@ -1,0 +1,44 @@
+# Veri havuzu
+
+```
+data/
+├── raw/                 indirilen ham veri (dokunulmaz)
+└── havuz/
+    ├── katalog.csv      seri başına bilgi: kaynak, sektör, adım, etiket düzeyi, lisans, benchmark
+    ├── gercek/          gerçek veri, kaynak başına bir Parquet (gercek_veri_hazirla.py üretir)
+    └── sentetik/        sentetik veri (egitim_verisi_uretici.py çıktıları buraya)
+```
+
+## Format (uzun)
+
+| Sütun | Tip | Anlam |
+|---|---|---|
+| `series_id` | str | `kaynak/.../bölüm`, ör. `smd/machine-1-1/test` |
+| `timestamp` | float64 | unix saniye |
+| `channel` | int16 | 0..k-1 (adlar katalogdaki `channel_names`) |
+| `value` | float32 | ham değer, NaN olabilir |
+| `label` | int8 | 1 anomali · 0 normal · -1 etiketsiz |
+
+Katalogda `label_level`: `row` satır etiketi tüm sütunlara yayılmış demek, `cell` sütun bazında etiket demek.
+`synthetic_time=True` ise kaynakta zaman damgası yoktu ve sabit adımla üretildi.
+
+```python
+from gercek_veri_hazirla import seri_yukle
+s = seri_yukle("nab/realKnownCause/nyc_taxi")
+s["raw"], s["labels"], s["meta"]
+```
+
+## Kaynaklar
+
+| Kaynak | Seri | Sütun | Adım | Etiket | Lisans | Benchmark |
+|---|---|---|---|---|---|---|
+| SKAB | 35 | 8 | 1 sn | satır | AGPL-3.0 | SKAB |
+| SKAB teaser | 1 | 8 | 1 sn | yok | AGPL-3.0 | – |
+| NAB | 58 | 1 | değişken | satır (pencere) | AGPL-3.0 | TSB-AD-U |
+| SMAP / MSL | 110 / 54 | 25 / 55 | sentetik | hücre (telemetri), train etiketsiz | telemanom | TSB-AD-M |
+| Pump sensor | 1 | 51 | 1 dk | satır (BROKEN+RECOVERING) | belirsiz | – |
+| SMD | 56 | 38 | sentetik 1 dk | hücre, train etiketsiz | MIT | TSB-AD-M |
+| CNC mill | 18 | 47 | 0.1 sn | yok | CC0 | – |
+
+**Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
+eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).

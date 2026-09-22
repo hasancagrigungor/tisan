@@ -1,0 +1,8 @@
+# veri havuzu ve ham indirmeler depoya girmez
+data/
+*.parquet
+*.zip
+*.h5
+__pycache__/
+*.pyc
+.DS_Store
