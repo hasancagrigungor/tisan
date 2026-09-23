@@ -119,6 +119,9 @@ Girdi (T, 1+k)
 - İki ekseni ayırmak hesaplamayı tek H100'e sığdırır: 2048 satır / 16 = 128 token × 100 sütun.
 - **Hedef boyut:** 10–50M parametre, bf16. İlk denemeler birkaç milyon parametreyle yapılır.
 - **Aşamalı yol:** Önce kanal bağımsız çalıştığı kanıtlanır, sonra sütunlar arası ilişkiler güçlendirilir.
+- **Konum kodlama (v4):** RoPE, konum = Δt oranlarının kümülatif toplamı (medyan adım = 1). Düzensiz örneklemede konum gerçek zamanı izler; kısa pencerede konum anlamı değişmez. Ablation: öğrenilmiş mutlak konum.
+- **Çok ölçekli girdi (v4):** her sütun için 4 kanal: ham değer, birinci fark, 8 ve 64 satırlık yerel seviyeden sapma. Uzun bağlamdaki kayma ince patch'e girer.
+- **Maskeli yeniden inşa (v4):** patch'lerin %30'u mask token ile gizlenip normalize değerler yeniden inşa edilir; etiketsiz 140M satırdan "normal" etiket olmadan öğrenilir (MOMENT/PatchTST). Önce ön eğitim, sonra anomali eğitimi (yardımcı kayıp olarak sürer). Yeniden inşa hatası ileride ikinci anomali sinyali.
 
 ### Eksik sütunlar ve ek kanallar
 
@@ -303,7 +306,8 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
       geçerli enjeksiyon (uygunluk + etki + çakışma kontrolü), worker'lara ulaşan curriculum, referanslı normalizasyon
       (eğitimde %25, inference'ta dondurulabilir otomatik referans), model seçimi / kalibrasyon / test için ayrı kaynaklar,
       satır düzeyinde kalibrasyon
-- [ ] v4 eğitimi (34M, düzeltilmiş akış); ablation: ek kanal açık/kapalı, sentetik payı, leave-one-domain-out
+- [x] Mimari v4: RoPE + gerçek zaman konumu, çok ölçekli girdi, maskeli yeniden inşa ön eğitimi
+- [ ] v4 eğitimi (34M); ablation: ön eğitim açık/kapalı, çok ölçekli açık/kapalı, RoPE/learned, sentetik payı, leave-one-domain-out
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
 - [x] `detect()`: ön/son işleme, kayan pencere, sütun gruplama, olaylar (çok ölçek ve örüntü özeti v2)

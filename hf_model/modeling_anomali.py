@@ -117,6 +117,20 @@ def parse_time_column(col):
 # =============================================================================
 # Model
 # =============================================================================
+def _rope(q, k, pos, base=10000.0):
+    """Döner konum kodlaması (RoPE), sürekli konumlarla. q,k: (N, h, L, dk); pos: (N, L) float."""
+    dk = q.shape[-1]
+    half = dk // 2
+    freq = base ** (-torch.arange(half, device=q.device, dtype=torch.float32) / half)       # (half,)
+    ang = pos.float()[:, None, :, None] * freq[None, None, None, :]                          # (N,1,L,half)
+    cos, sin = ang.cos().to(q.dtype), ang.sin().to(q.dtype)
+
+    def rot(x):
+        x1, x2 = x[..., :half], x[..., half:2 * half]
+        return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos, x[..., 2 * half:]], dim=-1)
+    return rot(q), rot(k)
+
+
 class _Attention(nn.Module):
     """Çok başlı dikkat, F.scaled_dot_product_attention ile (flash / mem-efficient çekirdekler)."""
 
@@ -127,10 +141,12 @@ class _Attention(nn.Module):
         self.out = nn.Linear(d, d)
         self.dropout = dropout
 
-    def forward(self, x, key_pad):
-        # x: (N, L, d); key_pad: (N, L) True = dolgu
+    def forward(self, x, key_pad, pos=None):
+        # x: (N, L, d); key_pad: (N, L) True = dolgu; pos: (N, L) RoPE için sürekli konum (None = konumsuz)
         N, L, d = x.shape
         q, k, v = self.qkv(x).reshape(N, L, 3, self.h, self.dk).permute(2, 0, 3, 1, 4)   # 3 × (N, h, L, dk)
+        if pos is not None:
+            q, k = _rope(q, k, pos)
         mask = (~key_pad)[:, None, None, :]                                             # True = dikkat edilebilir
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0)
         return self.out(a.transpose(1, 2).reshape(N, L, d))
@@ -149,12 +165,13 @@ class _Block(nn.Module):
         self.ff = nn.Sequential(nn.Linear(d, d_ff), nn.GELU(), nn.Dropout(dropout), nn.Linear(d_ff, d))
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, h, patch_pad, ch_pad):
-        # h: (B, P, C, d); patch_pad: (B, P) True = dolgu; ch_pad: (B, C) True = dolgu
+    def forward(self, h, patch_pad, ch_pad, pos=None):
+        # h: (B, P, C, d); patch_pad: (B, P) True = dolgu; ch_pad: (B, C) True = dolgu; pos: (B, P) zaman konumu
         B, P, C, d = h.shape
         # zaman dikkati: her sütun kendi geçmişine bakar
         x = self.n_time(h).permute(0, 2, 1, 3).reshape(B * C, P, d)
-        a = self.att_time(x, patch_pad.unsqueeze(1).expand(B, C, P).reshape(B * C, P))
+        a = self.att_time(x, patch_pad.unsqueeze(1).expand(B, C, P).reshape(B * C, P),
+                          None if pos is None else pos.unsqueeze(1).expand(B, C, P).reshape(B * C, P))
         h = h + self.drop(a.reshape(B, C, P, d).permute(0, 2, 1, 3))
         # sütun dikkati: aynı andaki sütunlar birbirine bakar (pozisyon bilgisi yok)
         x = self.n_ch(h).reshape(B * P, C, d)
@@ -174,10 +191,12 @@ class AnomaliModel(PreTrainedModel):
         self.n_feat = 1 + len(c.extra_channels)
         self.embed = nn.Linear(c.patch * self.n_feat, c.d_model)
         self.dt_embed = nn.Linear(c.patch, c.d_model)
-        self.pos = nn.Parameter(torch.zeros(c.max_t // c.patch, c.d_model))
+        self.pos = nn.Parameter(torch.zeros(c.max_t // c.patch, c.d_model))     # "learned" modunda kullanılır
+        self.mask_token = nn.Parameter(torch.zeros(c.d_model))                   # maskeli yeniden inşa için
         self.blocks = nn.ModuleList([_Block(c.d_model, c.n_heads, c.d_ff, c.dropout) for _ in range(c.n_layers)])
         self.norm = nn.LayerNorm(c.d_model)
         self.head = nn.Linear(c.d_model, c.patch * (1 + c.n_types))
+        self.recon = nn.Linear(c.d_model, c.patch) if getattr(c, "recon_head", False) else None
         self.post_init()
 
     def _init_weights(self, module):
@@ -192,16 +211,26 @@ class AnomaliModel(PreTrainedModel):
     # --- girdi özellikleri ---
     def _features(self, values, time_mask):
         feats = [values]
-        if "diff" in self.config.extra_channels:
-            d = torch.zeros_like(values)
-            d[:, 1:] = values[:, 1:] - values[:, :-1]
-            d = d * time_mask[:, :, None].to(values.dtype)
-            feats.append(d)
+        m = time_mask[:, :, None].to(values.dtype)
+        for name in self.config.extra_channels:
+            if name == "diff":
+                d = torch.zeros_like(values)
+                d[:, 1:] = values[:, 1:] - values[:, :-1]
+                feats.append(d * m)
+            elif name.startswith("ms"):                          # msN: N satırlık ortalanmış, maske ağırlıklı kayan ortalama
+                n = int(name[2:])
+                B, T, C = values.shape
+                v = (values * m).permute(0, 2, 1).reshape(B * C, 1, T)
+                w = m.expand(B, T, C).permute(0, 2, 1).reshape(B * C, 1, T)
+                num = F.avg_pool1d(v, n, stride=1, padding=n // 2, count_include_pad=True)[:, :, :T]
+                den = F.avg_pool1d(w, n, stride=1, padding=n // 2, count_include_pad=True)[:, :, :T]
+                ms = (num / den.clamp(min=1e-6)).reshape(B, C, T).permute(0, 2, 1)
+                feats.append((values - ms) * m)                  # yerel seviyeden sapma: uzun bağlamda kayma görünür
         return torch.stack(feats, dim=-1)                       # (B, T, C, F)
 
     def forward(self, values, delta_t, time_mask, channel_mask, labels=None, types=None,
                 focal_gamma=2.0, focal_alpha=0.75, type_weight=0.5,
-                label_weights=None, row_labels=None, row_weights=None):
+                label_weights=None, row_labels=None, row_weights=None, mask_patches=None, recon_weight=1.0):
         """
         values (B,T,C) float · delta_t (B,T) · time_mask (B,T) bool · channel_mask (B,C) bool
         T, patch'in katı olmalı; T ≤ max_t, C ≤ max_ch. Dolgu sağda ve sağ sütunlarda.
@@ -214,19 +243,38 @@ class AnomaliModel(PreTrainedModel):
         x = self._features(values, time_mask)                              # (B,T,C,F)
         x = x.reshape(B, P, p, C, self.n_feat).permute(0, 1, 3, 2, 4).reshape(B, P, C, p * self.n_feat)
         h = self.embed(x)
+        if mask_patches is not None:                                        # maskeli yeniden inşa: girdi yerine mask token
+            h = torch.where(mask_patches[..., None], self.mask_token.to(h.dtype).expand_as(h), h)
         h = h + self.dt_embed(delta_t.reshape(B, P, p))[:, :, None, :]
-        h = h + self.pos[:P][None, :, None, :]
+        pos = None
+        if getattr(cfg, "pos_encoding", "learned") == "rope":
+            # gerçek zaman konumu: Δt oranlarının kümülatif toplamı (medyan adım = 1); patch başına ortalama
+            step = torch.expm1(delta_t.float()).clamp(min=0)
+            step[:, 0] = 0
+            pos = torch.cumsum(step, dim=1).reshape(B, P, p).mean(-1)      # (B, P)
+        else:
+            h = h + self.pos[:P][None, :, None, :]
         patch_valid = time_mask.reshape(B, P, p).any(-1)
         patch_pad, ch_pad = ~patch_valid, ~channel_mask
         for blk in self.blocks:
             if self.training and getattr(self, "gradient_checkpointing", False):
-                h = checkpoint(blk, h, patch_pad, ch_pad, use_reentrant=False)
+                h = checkpoint(blk, h, patch_pad, ch_pad, pos, use_reentrant=False)
             else:
-                h = blk(h, patch_pad, ch_pad)
-        out = self.head(self.norm(h))                                       # (B,P,C,p*(1+K))
+                h = blk(h, patch_pad, ch_pad, pos)
+        h = self.norm(h)
+        recon = None
+        if self.recon is not None:
+            recon = self.recon(h).reshape(B, P, C, p).permute(0, 1, 3, 2).reshape(B, T, C)   # normalize değer tahmini
+        out = self.head(h)                                                  # (B,P,C,p*(1+K))
         out = out.reshape(B, P, C, p, 1 + cfg.n_types).permute(0, 1, 3, 2, 4).reshape(B, T, C, 1 + cfg.n_types)
         logits, type_logits = out[..., 0], out[..., 1:]
-        result = {"logits": logits, "type_logits": type_logits}
+        result = {"logits": logits, "type_logits": type_logits, "recon": recon}
+        if mask_patches is not None and recon is not None:                  # ön eğitim / yardımcı kayıp
+            valid = time_mask[:, :, None] & channel_mask[:, None, :]
+            mrow = mask_patches.repeat_interleave(p, dim=1) & valid          # (B,T,C) maskeli & geçerli hücreler
+            if mrow.any():
+                result["recon_loss"] = F.smooth_l1_loss(recon[mrow], values[mrow].to(recon.dtype))
+                result["loss"] = recon_weight * result["recon_loss"]
         if labels is not None:
             valid = time_mask[:, :, None] & channel_mask[:, None, :]
             # GPT-6 Astra: bilinmeyen ve satır düzeyindeki etiketler hücre hedefi değildir.
@@ -251,6 +299,8 @@ class AnomaliModel(PreTrainedModel):
                 if tmask.any():
                     ce = F.cross_entropy(type_logits[tmask], types[tmask].long(), reduction="mean")
                     loss = loss + type_weight * ce
+            if "loss" in result:                                            # ön eğitim kaybı + denetimli kayıp
+                loss = loss + result["loss"]
             result["loss"] = loss
         return result
 
