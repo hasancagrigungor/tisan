@@ -71,6 +71,24 @@ def prepare_window(t, X, max_t, max_ch):
     return values, dtf, time_mask, channel_mask
 
 
+def aggregate_rows(cell_scores, method="topk", k=3):
+    """(T, k) hücre olasılığı → (T,) satır skoru.
+    max: en yüksek hücre (çok sütunda yanlış pozitife açık)
+    topk: en yüksek k hücrenin ortalaması (k > sütun sayısıysa max'a düşer)
+    noisy_or: 1 - Π(1 - p): bağımsız kanıtları birleştirir"""
+    P = np.asarray(cell_scores, dtype=np.float64)
+    if P.ndim == 1 or P.shape[1] == 1:
+        return P.reshape(len(P))
+    if method == "max":
+        return P.max(1)
+    if method == "topk":
+        kk = min(k, P.shape[1])
+        return np.sort(P, axis=1)[:, -kk:].mean(1)
+    if method == "noisy_or":
+        return 1 - np.prod(1 - np.clip(P, 0, 1 - 1e-6), axis=1)
+    raise ValueError(method)
+
+
 def parse_time_column(col):
     """Unix saniye / milisaniye / ISO metin → unix saniye (float)."""
     col = np.asarray(col)
@@ -261,15 +279,17 @@ class AnomaliModel(PreTrainedModel):
         else:
             prob, types = self.score_matrix(t, X, batch_size=batch_size)
             note = None
-        return AnomaliResult(t, X, order, prob, types, thr, cfg.type_names, note)
+        return AnomaliResult(t, X, order, prob, types, thr, cfg.type_names, note,
+                             row_agg=cfg.row_agg, row_topk=cfg.row_topk)
 
 
 class AnomaliResult:
-    def __init__(self, t, X, order, cell_scores, cell_types, threshold, type_names, note=None):
+    def __init__(self, t, X, order, cell_scores, cell_types, threshold, type_names, note=None,
+                 row_agg="topk", row_topk=3):
         self.timestamps, self.values, self.order = t, X, order
         self.cell_scores, self.cell_types = cell_scores, cell_types
         self.threshold, self.type_names, self.note = threshold, type_names, note
-        self.row_scores = cell_scores.max(axis=1)
+        self.row_scores = aggregate_rows(cell_scores, row_agg, row_topk)
         self.anomaly_rows = np.where(self.row_scores > threshold)[0].tolist()
         self.events = self._events()
 

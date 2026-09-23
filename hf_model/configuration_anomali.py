@@ -11,7 +11,7 @@ class AnomaliConfig(PretrainedConfig):
     def __init__(self, d_model=256, n_layers=6, n_heads=8, d_ff=None, dropout=0.1,
                  patch=16, max_t=2048, max_ch=100, min_t=20,
                  extra_channels=("diff",), type_names=tuple(TYPES),
-                 temperature=1.0, **kwargs):
+                 temperature=1.0, row_agg="topk", row_topk=3, **kwargs):
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
@@ -24,6 +24,8 @@ class AnomaliConfig(PretrainedConfig):
         self.extra_channels = list(extra_channels)   # "diff": birinci fark kanalı
         self.type_names = list(type_names)
         self.temperature = temperature                # kalibrasyon (temperature scaling)
+        self.row_agg = row_agg                        # hücre → satır skoru: "max" | "topk" | "noisy_or"
+        self.row_topk = row_topk
         super().__init__(**kwargs)
 
     @property
