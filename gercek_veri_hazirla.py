@@ -45,7 +45,8 @@ BENCHMARK = {"nab": "TSB-AD-U", "smap": "TSB-AD-M", "msl": "TSB-AD-M", "smd": "T
 LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "smap": "telemanom (Apache-2.0), veri NASA", "msl": "telemanom (Apache-2.0), veri NASA",
           "pump": "belirsiz (Kaggle: unknown)", "smd": "MIT", "cnc": "CC0-1.0",
-          "wind_gearbox": "Apache-2.0", "hai": "CC-BY-SA-4.0"}
+          "wind_gearbox": "Apache-2.0", "hai": "CC-BY-SA-4.0", "metropt": "CC-BY-4.0",
+          "cats": "CC-BY-4.0", "tep": "CC-BY-4.0 (Rieth vd. 2017, simülasyon)"}
 
 
 def _unix(s):
@@ -256,6 +257,68 @@ def load_hai():
                         note=f"ICS test düzeneği (kazan/türbin/su); {ver}; train saldırısız")
 
 
+# Veloso vd. 2022, "The MetroPT dataset for predictive maintenance", Tablo: hava kompresörü arızaları
+METROPT_FAILURES = [("2020-04-18 00:00", "2020-04-18 23:59"), ("2020-05-29 23:30", "2020-05-30 06:00"),
+                    ("2020-06-05 10:00", "2020-06-07 14:30"), ("2020-07-15 14:30", "2020-07-15 19:00")]
+
+
+def load_metropt():
+    """MetroPT-3 (Porto metrosu APU kompresörü): 10 sn, 15 sensör (7 analog + 8 dijital), 4 arıza."""
+    d = pd.read_csv(RAW / "metropt" / "MetroPT3(AirCompressor).csv", index_col=0)
+    t = _unix(d["timestamp"])
+    names = [c for c in d.columns if c != "timestamp"]
+    lab = np.zeros(len(d), dtype=np.int8)
+    for a, b in METROPT_FAILURES:
+        lab[(t >= _unix(pd.Series([a]))[0]) & (t <= _unix(pd.Series([b]))[0])] = 1
+    yield _seri("metropt/0", "metropt", "transport", t, d[names].to_numpy(), lab, names, "row", False,
+                note="etiket = makaledeki 4 arıza aralığı (yağ sızıntısı / hava kaçağı)")
+
+
+def load_cats():
+    """CATS (Solenix): 17 kanal, 1 Hz, 200 kontrollü anomali; kök neden + etkilenen kanallar metadata'da.
+    İlk %70 eğitim (train), kalan %30 doğrulama (val)."""
+    base = RAW / "cats"
+    d = pd.read_csv(base / "data.csv")
+    meta = pd.read_csv(base / "metadata.csv")
+    t = _unix(d["timestamp"])
+    names = [c for c in d.columns if c not in ("timestamp", "y", "category")]
+    X = d[names].to_numpy()
+    T, k = X.shape
+    lab = np.zeros((T, k), dtype=np.int8)
+    for _, r in meta.iterrows():
+        rows = (t >= _unix(pd.Series([r.start_time]))[0]) & (t <= _unix(pd.Series([r.end_time]))[0])
+        cols = [names.index(c) for c in [r.root_cause] + ast.literal_eval(r.affected) if c in names]
+        lab[np.ix_(rows, cols)] = 1
+    y = d["y"].to_numpy() > 0
+    lab[y & ~(lab == 1).any(1)] = 1                                   # metadata dışı etiketli satır: tüm sütunlar
+    cut = int(T * 0.7)
+    for split, sl in (("train", slice(0, cut)), ("val", slice(cut, T))):
+        yield _seri(f"cats/{split}", "cats", "space", t[sl], X[sl], lab[sl], names, "cell", False,
+                    note="kontrollü anomali (uydu benzeri simülasyon test düzeneği); kök neden + etkilenen kanal etiketli")
+
+
+def load_tep(runs_per_fault=25, normal_runs=50):
+    """Tennessee Eastman (Rieth 2017): 52 değişken, 3 dk, koşu başına 500 örnek; arıza 20. örnekte başlar."""
+    base = RAW / "tep"
+    rng = np.random.default_rng(0)
+    names = None
+    for f, faulty in (("TEP_FaultFree_Training.csv", False), ("TEP_Faulty_Training.csv", True)):
+        d = pd.read_csv(base / f, index_col=0)
+        names = names or [c for c in d.columns if c.startswith(("xmeas", "xmv"))]
+        for fault, g in d.groupby("faultNumber"):
+            runs = sorted(g.simulationRun.unique())
+            pick = rng.choice(runs, min(len(runs), runs_per_fault if faulty else normal_runs), replace=False)
+            for run in pick:
+                r = g[g.simulationRun == run].sort_values("sample")
+                T = len(r)
+                lab = np.zeros(T, dtype=np.int8)
+                if faulty:
+                    lab[r["sample"].to_numpy() > 20] = 1
+                yield _seri(f"tep/fault{int(fault):02d}/run{int(run)}", "tep", "process_control", _synthetic_time(T, 180.0),
+                            r[names].to_numpy(), lab, names, "row", True,
+                            note=f"simülasyon; arıza {int(fault)} 20. örnekten sonra (0 = arızasız)")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -347,7 +410,7 @@ def load_lotsa(subset, path):
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
            "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox,
-           "hai": load_hai}
+           "hai": load_hai, "metropt": load_metropt, "cats": load_cats, "tep": load_tep}
 
 
 # =============================================================================

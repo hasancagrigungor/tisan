@@ -213,16 +213,30 @@ def generic_anomaly(ctx, kind=None):
         s, e = ctx.segment(5, 0.3, PERSISTENT_RATIO if kind in PERSISTENT_OK else 0.0)
     L = e - s
     seg = slice(s, e)
+    variant = rng.random()      # gerçek arızalara benzeyen ince alt varyantlar (~%35)
     if kind == "spike":
         x[seg] += sign * strength * sd
     elif kind == "level_shift":
-        x[seg] += sign * strength * sd * 0.6
+        if variant < 0.35:      # aralık içi set noktası kayması: küçük ama kalıcı (HAI tipi)
+            x[seg] += sign * rng.uniform(0.8, 1.8) * sd * ctx.f
+        else:
+            x[seg] += sign * strength * sd * 0.6
     elif kind == "flatline":
-        x[seg] = x[s]
+        if variant < 0.35:      # sensör takılması, sonra gerçek değere sıçrayarak dönüş
+            x[seg] = x[s] + rng.normal(0, 0.02 * sd, L)
+        else:
+            x[seg] = x[s]
     elif kind == "drift":
-        x[seg] += sign * strength * sd * np.linspace(0, 1, L)
+        if variant < 0.35:      # kademeli bozulma: yavaş kayma + artan salınım (rulman, pompa)
+            ramp = np.linspace(0, 1, L)
+            x[seg] += sign * strength * sd * 0.5 * ramp ** 2 + rng.normal(0, 1, L) * strength * sd * 0.4 * ramp
+        else:
+            x[seg] += sign * strength * sd * np.linspace(0, 1, L)
     elif kind == "noise_burst":
-        x[seg] += rng.normal(0, strength * sd * 0.5, L)
+        if variant < 0.35:      # varyans artışı yavaş yavaş gelir (aşınma)
+            x[seg] += rng.normal(0, 1, L) * strength * sd * 0.5 * np.linspace(0.2, 1, L)
+        else:
+            x[seg] += rng.normal(0, strength * sd * 0.5, L)
     elif kind == "pattern_change":
         p = rng.uniform(3, max(4.0, L / 2))
         x[seg] = np.median(x[seg]) + 1.5 * sd * np.sin(2 * np.pi * np.arange(L) / p)
@@ -1557,6 +1571,7 @@ def gen_abstract(rng, t, k, extra):
     gens = [seasonal, walk, intermittent, regime]
     n_lat = int(rng.integers(1, min(k, 5) + 1))
     lat = np.stack([gens[i]() for i in rng.integers(4, size=n_lat)], axis=1)
+    lat = np.clip(np.nan_to_num(lat, nan=0.0, posinf=0.0, neginf=0.0), -1e6, 1e6)   # taşma koruması
     lat = (lat - lat.mean(0)) / (lat.std(0) + 1e-8)
     W = rng.normal(0, 1, (n_lat, k)) * (rng.random((n_lat, k)) < 0.6)
     X = lat @ W + rng.normal(0, rng.uniform(0.05, 0.5), (T, k))

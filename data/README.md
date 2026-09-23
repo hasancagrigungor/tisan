@@ -44,7 +44,13 @@ s["raw"], s["labels"], s["meta"]
 | CNC mill | 18 | 47 | 0.1 sn | yok | CC0 | – |
 | Wind gearbox SCADA | 2 | 7 | 10 dk | satır (labeled), yok (complex) | Apache-2.0 | – |
 | HAI 20.07/21.03/22.04/23.05 | 28 | 60–86 | 1 sn | hücre (attack_P1–P3) / satır; train saldırısız | CC-BY-SA-4.0 | – |
+| MetroPT-3 | 1 | 15 | 10 sn | satır (makaledeki 4 arıza) | CC-BY-4.0 | – |
+| CATS | 2 (train/val) | 17 | 1 sn | hücre (kök neden kanalı) | CC-BY-4.0 | – |
+| Tennessee Eastman | ~550 | 52 | 3 dk (sentetik zaman) | satır (20. örnekten sonra arıza) | CC-BY-4.0, simülasyon | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
+
+**Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,
+wind `labeled`, Pump, MetroPT-3 ve CATS `val` doğrulamada. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).
