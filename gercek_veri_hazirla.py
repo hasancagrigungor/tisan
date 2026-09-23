@@ -49,7 +49,9 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "cats": "CC-BY-4.0", "tep": "CC-BY-4.0 (Rieth vd. 2017, simülasyon)",
           "cmapss": "CC0 / NASA kamu malı", "hydraulic": "CC-BY-4.0 (UCI)", "telecom_milan": "CC-BY (Telecom Italia)",
           "bidmc": "ODC-BY 1.0 (PhysioNet)", "mitbih": "ODC-BY 1.0 (PhysioNet)", "batadal": "belirsiz (BATADAL yarışması)",
-          "ved": "Apache-2.0", "glucobench": "belirsiz (Kaggle)", "stocks": "CC0-1.0"}
+          "ved": "Apache-2.0", "glucobench": "belirsiz (Kaggle)", "stocks": "CC0-1.0",
+          "esa": "CC-BY-4.0 (ESA-ADB)", "ppg_dalia": "CC-BY-4.0 (UCI)", "bosch_cnc": "CC-BY-4.0",
+          "lbnl": "CC-BY-4.0", "ims_bearing": "NASA kamu malı", "loghub": "belirsiz (Loghub)", "binance": "belirsiz (Kaggle)"}
 
 
 def _unix(s):
@@ -388,6 +390,207 @@ def load_bidmc():
                     -1, names, "row", True, note="1 Hz vital bulgular")
 
 
+def load_batadal():
+    """BATADAL: su dağıtım şebekesi (C-Town), saatlik, 43 sensör (tank seviyesi, pompa akış/durum, basınç).
+    training_1 saldırısız; training_2 ve test saldırı etiketli (ATT_FLAG)."""
+    base = RAW / "batadal"
+    for f in ("training_dataset_1", "training_dataset_2", "test_dataset"):
+        d = pd.read_csv(base / f"{f}.csv"); d.columns = d.columns.str.strip()
+        names = [c for c in d.columns if c not in ("DATETIME", "ATT_FLAG")]
+        t = pd.to_datetime(d["DATETIME"], format="%d/%m/%y %H").astype("int64").to_numpy() / 1e9
+        lab = (d["ATT_FLAG"].fillna(0).to_numpy() > 0).astype(np.int8)
+        yield _seri(f"batadal/{f}", "batadal", "water", t, d[names].to_numpy(), lab, names, "row", False,
+                    note="siber saldırı etiketi (ATT_FLAG); training_1 tamamen normal")
+
+
+NORMAL_BEATS = {"N", "L", "R", "e", "j", ".", "+", "~", "|", "\"", "x", "s", "@", "[", "]", "!", "(", ")", "p", "t", "u", "`", "'", "^"}
+
+
+def load_mitbih(halfwin=54):
+    """MIT-BIH Arrhythmia (PhysioNet, CSV): 48 kayıt × 30 dk, 360 Hz, 2 derivasyon.
+    Etiket: normal olmayan atımlar (V, A, F, /, ...) ± halfwin örnek (~0.15 sn)."""
+    base = RAW / "mitbih"
+    for f in sorted(base.glob("*_ekg.csv")):
+        rid = f.name.split("_")[0]
+        d = pd.read_csv(f, index_col=0)
+        names = [c for c in d.columns if c != "symbol"]
+        X = d[names].to_numpy()
+        T = len(X)
+        lab = np.zeros(T, dtype=np.int8)
+        beats = d.index[d["symbol"].notna() & ~d["symbol"].isin(NORMAL_BEATS)].to_numpy()
+        for b in beats:
+            lab[max(0, b - halfwin):b + halfwin] = 1
+        yield _seri(f"mitbih/{rid}", "mitbih", "ecg", _synthetic_time(T, 1 / 360), X, lab, names, "row", True,
+                    note="anormal atım (ektopik vb.) etiketi; 360 Hz")
+
+
+def load_ved(max_trips=500, min_rows=200):
+    """VED (Vehicle Energy Dataset, Michigan): yolculuk başına ~1 sn CAN/OBD: hız, MAF, devir, yük, dış sıcaklık,
+    yakıt düzeltmeleri. Etiketsiz otomotiv arka planı."""
+    base = RAW / "ved"
+    ch = ["Vehicle_Speed_km_per_h", "MAF_g_per_sec", "Engine_RPM_RPM", "Absolute_Load_pct", "OAT_DegC",
+          "Short_Term_Fuel_Trim_Bank_1_pct", "Long_Term_Fuel_Trim_Bank_1_pct"]
+    rng = np.random.default_rng(0)
+    n = 0
+    for f in sorted(base.rglob("*.parquet")):
+        d = pd.read_parquet(f, columns=["VehId", "Trip", "Timestampms"] + ch)
+        trips = [(v, tr) for (v, tr), g in d.groupby(["VehId", "Trip"]).size().items() if g >= min_rows]
+        rng.shuffle(trips)
+        for v, tr in trips:
+            if n >= max_trips:
+                return
+            g = d[(d.VehId == v) & (d.Trip == tr)].sort_values("Timestampms")
+            X = g[ch].to_numpy(dtype=float)
+            keep = ~np.isnan(X).all(0)
+            if keep.sum() < 3:
+                continue
+            t0 = 1_527_000_000.0 + n * 1e5                       # yolculuklar birbirinden ayrık sahte zamanlar
+            yield _seri(f"ved/veh{int(v)}/trip{int(tr)}", "ved", "automotive", t0 + g["Timestampms"].to_numpy() / 1000.0,
+                        X[:, keep], -1, [c for c, k in zip(ch, keep) if k], "row", True,
+                        note="etiketsiz; yolculuk içi göreli zaman gerçek, başlangıç sahte")
+            n += 1
+
+
+def load_stocks(n_stocks=400, n_etfs=100, min_rows=1000):
+    """Huge Stock Market Dataset (CC0): ABD hisse/ETF günlük OHLCV. Rastgele örneklem, iş günü takvimi.
+    Etiketsiz finans arka planı (hafta sonu boşlukları normal)."""
+    base = RAW / "stocks"
+    rng = np.random.default_rng(0)
+    ch = ["Open", "High", "Low", "Close", "Volume"]
+    for sub, n in (("Stocks", n_stocks), ("ETFs", n_etfs)):
+        files = sorted((base / sub).glob("*.txt"))
+        for f in rng.choice(files, min(n, len(files)), replace=False):
+            try:
+                d = pd.read_csv(f)
+            except pd.errors.EmptyDataError:
+                continue
+            if len(d) < min_rows:
+                continue
+            yield _seri(f"stocks/{sub.lower()}/{f.stem.replace('.us', '')}", "stocks", "finance", _unix(d["Date"]),
+                        d[ch].to_numpy(dtype=float), -1, ch, "row", False, note="etiketsiz; günlük OHLCV, iş günleri")
+
+
+def load_esa(resample="10min"):
+    """ESA-ADB Mission1 (ESA, 2024): gerçek uydu telemetrisi, 14 yıl, düzensiz örnekleme; kanal bazında
+    etiketli anomali aralıkları. İndirilen kanallar 10 dk ortalamaya indirilir; ilk %70 train, kalan val."""
+    base = RAW / "esa"
+    labels = pd.read_csv(base / "labels.csv")
+    labels["StartTime"] = pd.to_datetime(labels.StartTime).dt.tz_localize(None)
+    labels["EndTime"] = pd.to_datetime(labels.EndTime).dt.tz_localize(None)
+    for z in sorted(base.glob("channel_*.zip"), key=lambda p: int(p.stem.split("_")[1])):
+        ch = z.stem
+        f = base / ch
+        if not f.exists():
+            import zipfile
+            zipfile.ZipFile(z).extractall(base)
+        d = pd.read_pickle(f)
+        r = d.iloc[:, 0].resample(resample).mean()
+        r = r[r.first_valid_index():r.last_valid_index()]
+        t = r.index.astype("int64").to_numpy() / 1e9
+        lab = np.zeros(len(r), dtype=np.int8)
+        for _, row in labels[labels.Channel == ch].iterrows():
+            lab[(r.index >= row.StartTime) & (r.index <= row.EndTime)] = 1
+        cut = int(len(r) * 0.7)
+        for split, sl in (("train", slice(0, cut)), ("val", slice(cut, None))):
+            yield _seri(f"esa/{ch}/{split}", "esa", "space", t[sl], r.to_numpy()[sl, None], lab[sl], [ch], "row", False,
+                        note=f"ESA-ADB Mission1, {resample} ortalama; anomali aralıkları labels.csv")
+
+
+def load_bosch_cnc(max_files_per_op=40, down=10):
+    """Bosch CNC Machining: 3 makine × 15 operasyon, 2 kHz 3 eksen titreşim; dosya = 1 proses (iyi/kötü).
+    Aynı (makine, op) dosyaları zaman sırasıyla art arda eklenir, kötü prosesler etiketlenir; 10× ortalama (200 Hz)."""
+    base = RAW / "bosch_cnc"
+    for m in sorted(p for p in base.iterdir() if p.is_dir()):
+        for op in sorted(p for p in m.iterdir() if p.is_dir()):
+            files = sorted(op.rglob("*.csv"), key=lambda p: p.name)[:max_files_per_op]
+            if not files:
+                continue
+            parts, labs = [], []
+            for f in files:
+                a = pd.read_csv(f).to_numpy(dtype=float)
+                n = len(a) // down
+                a = a[:n * down].reshape(n, down, -1).mean(1)
+                parts.append(a); labs.append(np.full(n, 1 if f.parent.name == "bad" else 0, dtype=np.int8))
+            X, lab = np.vstack(parts), np.concatenate(labs)
+            yield _seri(f"bosch_cnc/{m.name}/{op.name}", "bosch_cnc", "manufacturing", _synthetic_time(len(X), down / 2000),
+                        X, lab, ["acc_x", "acc_y", "acc_z"], "row", True,
+                        note=f"{len(files)} proses art arda; kötü proses = 1")
+
+
+def load_lbnl():
+    """LBNL bina HVAC arıza tespiti: 1 dk, AHU/RTU/VAV sensörleri, 'Fault Detection Ground Truth' etiketi.
+    Tamamı arızalı olan dosyalar etiketsiz (-1) sayılır."""
+    base = RAW / "lbnl"
+    for f in sorted(base.glob("*.csv")):
+        d = pd.read_csv(f, na_values=["NA"])
+        lcol = "Fault Detection Ground Truth"
+        tcol = d.columns[0]
+        names = [c for c in d.columns if c not in (tcol, lcol) and pd.api.types.is_numeric_dtype(d[c]) and d[c].notna().any()]
+        y = d[lcol].fillna(0).astype(int).to_numpy()
+        lab = y.astype(np.int8) if 0 < y.mean() < 1 else -1
+        yield _seri(f"lbnl/{f.stem}", "lbnl", "building", _unix(pd.to_datetime(d[tcol], format="mixed")),
+                    d[names].to_numpy(dtype=float), lab, names, "row", False,
+                    note="HVAC arıza senaryoları; dosya tamamen arızalıysa etiketsiz")
+
+
+def load_ims_bearing(raw_snapshots=30):
+    """NASA IMS rulman: her 10 dk'da 1 sn (20 kHz) titreşim anlık kaydı, arızaya kadar.
+    (a) anlık kayıt başına RMS / tepe / basıklık → uzun bozulma serisi (son %8 = 1)
+    (b) rastgele anlık kayıtlar 20 kHz ham arka plan olarak."""
+    base = RAW / "ims_bearing"
+    rng = np.random.default_rng(0)
+    for test in ("1st_test", "2nd_test", "3rd_test"):
+        files = sorted(p for p in (base / test).rglob("*") if p.is_file() and p.name[:4].isdigit())
+        feats, times = [], []
+        for f in files:
+            a = np.loadtxt(f)
+            rms = np.sqrt((a ** 2).mean(0)); peak = np.abs(a).max(0)
+            kurt = ((a - a.mean(0)) ** 4).mean(0) / (a.var(0) ** 2 + 1e-12)
+            feats.append(np.concatenate([rms, peak, kurt]))
+            times.append(pd.to_datetime(f.name, format="%Y.%m.%d.%H.%M.%S").timestamp())
+        F = np.array(feats); k = F.shape[1] // 3
+        names = [f"{s}_b{i+1}" for s in ("rms", "peak", "kurt") for i in range(k)]
+        lab = np.zeros(len(F), dtype=np.int8); lab[int(len(F) * 0.92):] = 1
+        yield _seri(f"ims_bearing/{test}/features", "ims_bearing", "manufacturing", np.array(times), F, lab, names, "row", False,
+                    note="anlık kayıt özellikleri (10 dk); son %8 = arızaya yaklaşma")
+        for f in rng.choice(files, min(raw_snapshots, len(files)), replace=False):
+            a = np.loadtxt(f)
+            yield _seri(f"ims_bearing/{test}/raw_{f.name}", "ims_bearing", "manufacturing", _synthetic_time(len(a), 1 / 20480), a, -1,
+                        [f"acc_{i+1}" for i in range(a.shape[1])], "row", True, note="1 sn ham titreşim, 20 kHz")
+
+
+def load_bgl(bin_s=60):
+    """Loghub BGL (BlueGene/L) sistem logu: dakikalık mesaj sayaçları; satır başındaki '-' = normal,
+    diğer etiketler = alarm. Kanallar: toplam, KERNEL, APP, HARDWARE, diğer; etiket = dakikada alarm var mı."""
+    base = RAW / "loghub"
+    ts, alert, comp = [], [], []
+    with open(base / "BGL.log", errors="ignore") as fh:
+        for line in fh:
+            parts = line.split(" ", 9)
+            if len(parts) < 9:
+                continue
+            ts.append(int(parts[1])); alert.append(parts[0] != "-"); comp.append(parts[7])
+    d = pd.DataFrame({"t": np.array(ts) // bin_s * bin_s, "alert": alert, "comp": comp})
+    g = d.groupby("t")
+    X = pd.DataFrame({"total": g.size(), "kernel": g.comp.apply(lambda c: (c == "KERNEL").sum()),
+                      "app": g.comp.apply(lambda c: (c == "APP").sum()), "hardware": g.comp.apply(lambda c: (c == "HARDWARE").sum())})
+    lab = g.alert.any().astype(np.int8).reindex(X.index).to_numpy()
+    full = pd.RangeIndex(X.index.min(), X.index.max() + bin_s, bin_s)
+    X = X.reindex(full, fill_value=0); lab = pd.Series(lab, index=g.size().index).reindex(full, fill_value=0).to_numpy()
+    yield _seri("bgl/0", "loghub", "it", X.index.to_numpy(dtype=float), X.to_numpy(dtype=float), lab, list(X.columns), "row", False,
+                note="dakikalık log sayaçları; alarm etiketli dakikalar = 1")
+
+
+def load_binance():
+    """Binance 1 dk OHLCV (Kaggle): BTC/ETH/BNB/ADA-USDT. Etiketsiz kripto arka planı (7/24, boşluksuz)."""
+    base = RAW / "binance"
+    ch = ["open", "high", "low", "close", "volume", "number_of_trades"]
+    for f in sorted(base.glob("*.parquet")):
+        d = pd.read_parquet(f, columns=ch).dropna()
+        yield _seri(f"binance/{f.stem}", "binance", "finance", d.index.astype("int64").to_numpy() / 1e9,
+                    d.to_numpy(dtype=float), -1, ch, "row", False, note="etiketsiz; 1 dk OHLCV")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -481,7 +684,9 @@ LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, 
            "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox,
            "hai": load_hai, "metropt": load_metropt, "cats": load_cats, "tep": load_tep,
            "cmapss": load_cmapss, "hydraulic": load_hydraulic,
-           "telecom_milan": load_telecom_milan, "bidmc": load_bidmc}
+           "telecom_milan": load_telecom_milan, "bidmc": load_bidmc, "batadal": load_batadal, "mitbih": load_mitbih, "ved": load_ved, "stocks": load_stocks, "esa": load_esa,
+           "bosch_cnc": load_bosch_cnc, "lbnl": load_lbnl, "ims_bearing": load_ims_bearing, "loghub": load_bgl,
+           "binance": load_binance}
 
 
 # =============================================================================

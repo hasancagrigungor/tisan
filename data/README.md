@@ -47,10 +47,24 @@ s["raw"], s["labels"], s["meta"]
 | MetroPT-3 | 1 | 15 | 10 sn | satır (makaledeki 4 arıza) | CC-BY-4.0 | – |
 | CATS | 2 (train/val) | 17 | 1 sn | hücre (kök neden kanalı) | CC-BY-4.0 | – |
 | Tennessee Eastman | ~550 | 52 | 3 dk (sentetik zaman) | satır (20. örnekten sonra arıza) | CC-BY-4.0, simülasyon | – |
+| C-MAPSS (NASA turbofan) | 709 | 21 | sentetik (çevrim) | son 25 çevrim | CC0 | – |
+| Hidrolik (UCI) | 1 | 17 | 1 sn | yok (DOE) | CC-BY-4.0 | – |
+| Milano telekom | 400 | 5 | 1 saat | yok | CC-BY | – |
+| BIDMC (PhysioNet) | 106 | 4–5 | 8 ms / 1 sn | yok | ODC-BY | – |
+| MIT-BIH Arrhythmia | 48 | 2 | 2.8 ms | satır (anormal atım ±0.15 sn) | ODC-BY | – |
+| BATADAL | 3 | 43 | 1 saat | satır (siber saldırı) | belirsiz | – |
+| VED (araç CAN) | 500 | ≤7 | ~1 sn | yok | Apache-2.0 | – |
+| ABD hisse/ETF (CC0) | 333 | 5 | 1 gün (iş günü) | yok | CC0 | – |
+| Binance 1 dk | 4 | 6 | 1 dk | yok | belirsiz | – |
+| ESA-ADB Mission1 (14 kanal) | 28 (train/val) | 1 | 10 dk ort. | satır (labels.csv) | CC-BY-4.0 | – |
+| Bosch CNC | 44 | 3 | 5 ms (200 Hz) | satır (kötü proses) | CC-BY-4.0 | – |
+| IMS rulman | 93 | 4–24 | 10 dk (özellik) / 20 kHz (ham) | satır (son %8) / yok | NASA | – |
+| LBNL HVAC | 6 | ~40–90 | 1 dk | satır (arıza) | CC-BY-4.0 | – |
+| BGL log sayaçları | 1 | 4 | 1 dk | satır (alarm) | belirsiz | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,
-wind `labeled`, Pump, MetroPT-3 ve CATS `val` doğrulamada. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
+wind `labeled`, Pump, MetroPT-3, CATS `val`, ESA `val` ve BATADAL test doğrulamada. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).

@@ -180,7 +180,7 @@ Gerçek veri `gercek_veri_hazirla.py` ile ortak formata çevrilir ve `data/havuz
 | LOTSA (105 alt küme, her birinden örnek) | ~10.000 | yok | Eğitim arka planı: ulaşım, enerji, iklim, bilişim, perakende, finans, sağlık |
 | Kendi 50 sektör | – | yok | Asıl fark yaratacak kaynak, henüz eklenmedi |
 
-**Kabul ölçütü:** Bir veri seti havuza girmeden önce rastgelelik testinden geçer: saat/gün dağılımı, saatlik hacimde otokorelasyon, olay aralıklarının dağılımı. Tamamen rastgele üretilmiş veride öğrenilecek "normal" yoktur (örnek: Kaggle `financial-transactions-dataset-for-fraud-detection` bu testte düz dağılım, sıfır otokorelasyon ve Poisson hacim verdi; reddedildi).
+**Kabul ölçütü:** Bir veri seti havuza girmeden önce rastgelelik testinden geçer: saat/gün dağılımı, saatlik hacimde otokorelasyon, olay aralıklarının dağılımı. Tamamen rastgele üretilmiş veride öğrenilecek "normal" yoktur (reddedilenler: Kaggle fraud işlemleri — düz dağılım, sıfır otokorelasyon, Poisson hacim; CIC-DDoS — 92 dakikalık akış tablosu; GlucoBench — nabız ve cilt sıcaklığı beyaz gürültü).
 
 **Havuzdan eğitim örneği:** Pencere kesme havuza yazılmaz, eğitim sırasında rastgele yapılır: uzunluk 20–2048, sütun alt kümesi 1–100 (log-uniform), rastgele çözünürlük düşürme, anomalinin pencere içindeki konumu. Doğrulama seti sabit seed ile bir kez kesilir ve dosyaya yazılır.
 
