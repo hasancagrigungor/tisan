@@ -67,6 +67,7 @@ s["raw"], s["labels"], s["meta"]
 | ASD (uygulama sunucuları) | 24 | 19 | 5 dk | satır (test) | MIT | – |
 | FEMTO rulman | ~156 | 2–6 | 10 sn (özellik) / 25.6 kHz (ham) | satır (son %8) / yok | akademik | – |
 | UCI hava kalitesi / ev enerji / doluluk | 5 | 5–28 | 1 dk – 1 saat | yok | CC-BY-4.0 | – |
+| kantine robot kolu (LeRobot) | 11 | 12 | 33 ms | satır (anomali bölümleri) / yok | Apache-2.0 | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,

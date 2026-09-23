@@ -53,7 +53,8 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "esa": "CC-BY-4.0 (ESA-ADB)", "ppg_dalia": "CC-BY-4.0 (UCI)", "bosch_cnc": "CC-BY-4.0",
           "lbnl": "CC-BY-4.0", "ims_bearing": "NASA kamu malı", "loghub": "belirsiz (Loghub)", "binance": "belirsiz (Kaggle)",
           "ucr": "akademik kullanım (UCR)", "psm": "eBay (RANSynCoders, MIT)", "damadics": "akademik (DAMADICS, Lublin)",
-          "asd": "InterFusion (MIT)", "uci": "CC-BY-4.0 (UCI)", "femto": "PHM 2012 / FEMTO-ST (akademik)"}
+          "asd": "InterFusion (MIT)", "uci": "CC-BY-4.0 (UCI)", "femto": "PHM 2012 / FEMTO-ST (akademik)",
+          "kantine": "Apache-2.0 (LeRobot, kantine)"}
 
 
 def _unix(s):
@@ -708,6 +709,27 @@ def load_femto(raw_snapshots=25):
                         ["acc_h", "acc_v"], "row", True, note="0.1 sn ham titreşim, 25.6 kHz")
 
 
+def load_kantine():
+    """kantine/*_anomaly (LeRobot, SO-100 robot kolu): 30 fps, 6 eklem gözlemi + 6 komut. Bölümler art arda eklenir.
+    Görev açıklaması '0:4 normal/expert ...' ise ilk 5 bölüm normal, kalanı anomali; aksi hâlde etiketsiz."""
+    import json
+    base = RAW / "kantine"
+    for dsdir in sorted(p for p in base.iterdir() if p.is_dir()):
+        info = json.load(open(dsdir / "meta" / "info.json"))
+        task = json.loads(open(dsdir / "meta" / "tasks.jsonl").readline())["task"].lower()
+        labeled = task.startswith("0:4") and ("normal" in task[:40] or "expert" in task[:40])
+        parts, labs = [], []
+        for f in sorted(dsdir.rglob("episode_*.parquet")):
+            d = pd.read_parquet(f)
+            ep = int(d["episode_index"].iloc[0])
+            X = np.column_stack([np.stack(d["observation.state"].to_numpy()), np.stack(d["action"].to_numpy())])
+            parts.append(X); labs.append(np.full(len(X), (1 if ep >= 5 else 0) if labeled else -1, dtype=np.int8))
+        X, lab = np.vstack(parts), np.concatenate(labs)
+        names = [f"state_{i}" for i in range(6)] + [f"action_{i}" for i in range(6)]
+        yield _seri(f"kantine/{dsdir.name}", "kantine", "robotics", _synthetic_time(len(X), 1 / info["fps"]), X, lab,
+                    names, "row", True, note=("ilk 5 bölüm normal, sonrakiler anomali senaryosu" if labeled else "etiketsiz (tüm bölümler senaryo)"))
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -804,7 +826,7 @@ LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, 
            "telecom_milan": load_telecom_milan, "bidmc": load_bidmc, "batadal": load_batadal, "mitbih": load_mitbih, "ved": load_ved, "stocks": load_stocks, "esa": load_esa,
            "bosch_cnc": load_bosch_cnc, "lbnl": load_lbnl, "ims_bearing": load_ims_bearing, "loghub": load_bgl,
            "binance": load_binance, "ucr": load_ucr, "psm": load_psm, "damadics": load_damadics,
-           "asd": load_asd, "uci": load_uci_small, "femto": load_femto}
+           "asd": load_asd, "uci": load_uci_small, "femto": load_femto, "kantine": load_kantine}
 
 
 # =============================================================================
