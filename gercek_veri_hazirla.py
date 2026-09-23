@@ -40,7 +40,7 @@ KATALOG = ROOT / "havuz" / "katalog.csv"
 # TSB-AD değerlendirme setinde de bulunan kaynaklar. README §9: benchmark verisi eğitime girmez.
 # Eğitimde kullanılacaksa ilgili benchmark bölümü değerlendirmeden çıkarılmalı.
 BENCHMARK = {"nab": "TSB-AD-U", "smap": "TSB-AD-M", "msl": "TSB-AD-M", "smd": "TSB-AD-M",
-             "skab": "SKAB benchmark"}
+             "skab": "SKAB benchmark", "ucr": "UCR Anomaly Archive", "psm": "TSB-AD-M"}
 
 LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "smap": "telemanom (Apache-2.0), veri NASA", "msl": "telemanom (Apache-2.0), veri NASA",
@@ -51,7 +51,9 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "bidmc": "ODC-BY 1.0 (PhysioNet)", "mitbih": "ODC-BY 1.0 (PhysioNet)", "batadal": "belirsiz (BATADAL yarışması)",
           "ved": "Apache-2.0", "glucobench": "belirsiz (Kaggle)", "stocks": "CC0-1.0",
           "esa": "CC-BY-4.0 (ESA-ADB)", "ppg_dalia": "CC-BY-4.0 (UCI)", "bosch_cnc": "CC-BY-4.0",
-          "lbnl": "CC-BY-4.0", "ims_bearing": "NASA kamu malı", "loghub": "belirsiz (Loghub)", "binance": "belirsiz (Kaggle)"}
+          "lbnl": "CC-BY-4.0", "ims_bearing": "NASA kamu malı", "loghub": "belirsiz (Loghub)", "binance": "belirsiz (Kaggle)",
+          "ucr": "akademik kullanım (UCR)", "psm": "eBay (RANSynCoders, MIT)", "damadics": "akademik (DAMADICS, Lublin)",
+          "asd": "InterFusion (MIT)", "uci": "CC-BY-4.0 (UCI)", "femto": "PHM 2012 / FEMTO-ST (akademik)"}
 
 
 def _unix(s):
@@ -591,6 +593,121 @@ def load_binance():
                     d.to_numpy(dtype=float), -1, ch, "row", False, note="etiketsiz; 1 dk OHLCV")
 
 
+def load_ucr():
+    """UCR Time Series Anomaly Archive (2021): 250 tek değişkenli seri; dosya adı = ..._TRAINEND_ASTART_AEND.
+    SADECE DEĞERLENDİRME (README §9). Test bölümü (TRAINEND sonrası) etiketli; eğitim bölümü normal."""
+    base = RAW / "ucr"
+    seen = set()
+    for f in sorted(base.rglob("*.txt")):
+        parts = f.stem.split("_")
+        if len(parts) < 4 or not parts[-1].isdigit() or f.stem in seen:     # arşivde birkaç dosya iki kopya
+            continue
+        seen.add(f.stem)
+        try:
+            x = np.loadtxt(f)
+        except ValueError:
+            x = np.loadtxt(f, delimiter=",").ravel()
+        x = x.ravel()
+        train_end, a, b = int(parts[-3]), int(parts[-2]), int(parts[-1])
+        lab = np.zeros(len(x), dtype=np.int8)
+        lab[a:b + 1] = 1
+        name = "_".join(parts[:-3])
+        yield _seri(f"ucr/{name}", "ucr", "abstract", _synthetic_time(len(x), 1.0), x[:, None], lab, ["value"], "row", True,
+                    note=f"UCR anomali arşivi; eğitim bölümü ilk {train_end} nokta, anomali [{a},{b}]")
+
+
+def load_psm():
+    """PSM (eBay Pooled Server Metrics): 25 metrik, 1 dk; test etiketli. SADECE DEĞERLENDİRME (TSB-AD-M)."""
+    base = RAW / "psm"
+    for split in ("train", "test"):
+        d = pd.read_csv(base / f"{split}.csv")
+        names = [c for c in d.columns if c.startswith("feature")]
+        X = d[names].to_numpy(dtype=float)
+        if split == "test":
+            lab = pd.read_csv(base / "test_label.csv")["label"].to_numpy().astype(np.int8)
+        else:
+            lab = -1
+        yield _seri(f"psm/{split}", "psm", "it", _synthetic_time(len(X), 60.0), X, lab, names, "row", True,
+                    note="eBay sunucu metrikleri; train etiketsiz, test etiketli")
+
+
+def load_damadics():
+    """DAMADICS (Lublin şeker fabrikası, Kasım 2001): aktüatör/proses ölçümleri, 1 Hz, günlük dosyalar.
+    Arıza zamanları resmi kayıtta; burada etiketsiz proses arka planı olarak alınır (-1)."""
+    base = RAW / "damadics"
+    for f in sorted(base.glob("*.txt"), key=lambda p: (p.stem[4:8], p.stem[2:4], p.stem[:2])):
+        d = pd.read_csv(f, sep=None, engine="python", header=None)
+        d = d.select_dtypes("number")
+        X = d.to_numpy(dtype=float)
+        X = X[:, X.std(0) > 0]
+        day = pd.Timestamp(f"{f.stem[4:8]}-{f.stem[2:4]}-{f.stem[:2]}").timestamp()
+        yield _seri(f"damadics/{f.stem}", "damadics", "process_control", day + np.arange(len(X), dtype=float), X, -1,
+                    [f"v{i}" for i in range(X.shape[1])], "row", True, note="etiketsiz; günlük 1 Hz kayıt")
+
+
+def load_asd():
+    """ASD (Application Server Dataset, InterFusion): 12 sunucu, 19 metrik, 5 dk. train etiketsiz (normal), test etiketli."""
+    import pickle
+    base = RAW / "asd"
+    for i in range(1, 13):
+        tr = np.asarray(pickle.load(open(base / f"omi-{i}_train.pkl", "rb")), dtype=float)
+        te = np.asarray(pickle.load(open(base / f"omi-{i}_test.pkl", "rb")), dtype=float)
+        lab = np.asarray(pickle.load(open(base / f"omi-{i}_test_label.pkl", "rb"))).astype(np.int8)
+        names = [f"metric_{j}" for j in range(tr.shape[1])]
+        yield _seri(f"asd/omi-{i}/train", "asd", "it", _synthetic_time(len(tr), 300.0), tr, -1, names, "row", True, note="etiketsiz (normal)")
+        yield _seri(f"asd/omi-{i}/test", "asd", "it", _synthetic_time(len(te), 300.0, 1_577_836_800.0 + 300 * len(tr)), te, lab,
+                    names, "row", True, note="etiketli test (train'in devamı)")
+
+
+def load_uci_small():
+    """UCI küçük IoT/çevre setleri: hava kalitesi (saatlik), ev enerji (10 dk), oda doluluk (1 dk). Etiketsiz."""
+    base = RAW / "uci"
+    d = pd.read_csv(base / "air_quality" / "AirQualityUCI.csv", sep=";", decimal=",").dropna(how="all", axis=1).dropna(subset=["Date"])
+    t = pd.to_datetime(d["Date"] + " " + d["Time"], format="%d/%m/%Y %H.%M.%S")
+    names = [c for c in d.columns if c not in ("Date", "Time")]
+    X = d[names].to_numpy(dtype=float); X[X == -200] = np.nan
+    yield _seri("uci/air_quality", "uci", "environment", _unix(t), X, -1, names, "row", False, note="etiketsiz; -200 → NaN")
+    d = pd.read_csv(base / "appliances" / "energydata_complete.csv")
+    names = [c for c in d.columns if c != "date"]
+    yield _seri("uci/appliances", "uci", "building", _unix(d["date"]), d[names].to_numpy(dtype=float), -1, names, "row", False, note="etiketsiz")
+    for f in ("datatraining", "datatest", "datatest2"):
+        d = pd.read_csv(base / "occupancy" / f"{f}.txt")
+        names = ["Temperature", "Humidity", "Light", "CO2", "HumidityRatio"]
+        yield _seri(f"uci/occupancy_{f}", "uci", "building", _unix(d["date"]), d[names].to_numpy(dtype=float), -1, names, "row", False, note="etiketsiz")
+
+
+def _femto_read(f):
+    try:
+        return np.loadtxt(f, delimiter=",")
+    except ValueError:
+        return np.loadtxt(f, delimiter=";")
+
+
+def load_femto(raw_snapshots=25):
+    """FEMTO / PRONOSTIA (PHM 2012): rulman çalışma-arıza; her 10 sn'de 0.1 sn (25.6 kHz) 2 eksen titreşim.
+    (a) anlık kayıt özellikleri (RMS/tepe/basıklık) → bozulma serisi (son %8 = 1); (b) ham anlık kayıt örnekleri."""
+    base = RAW / "femto" / "Learning_set"
+    rng = np.random.default_rng(0)
+    for b in sorted(base.iterdir()):
+        files = sorted(b.glob("acc_*.csv"))
+        if not files:
+            continue
+        feats = []
+        for f in files:
+            a = _femto_read(f)[:, 4:6]
+            rms = np.sqrt((a ** 2).mean(0)); peak = np.abs(a).max(0)
+            kurt = ((a - a.mean(0)) ** 4).mean(0) / (a.var(0) ** 2 + 1e-12)
+            feats.append(np.concatenate([rms, peak, kurt]))
+        F = np.array(feats)
+        lab = np.zeros(len(F), dtype=np.int8); lab[int(len(F) * 0.92):] = 1
+        yield _seri(f"femto/{b.name}/features", "femto", "manufacturing", _synthetic_time(len(F), 10.0), F, lab,
+                    ["rms_h", "rms_v", "peak_h", "peak_v", "kurt_h", "kurt_v"], "row", True, note="10 sn'lik özellikler; son %8 = arızaya yaklaşma")
+        for f in rng.choice(files, min(raw_snapshots, len(files)), replace=False):
+            a = _femto_read(f)[:, 4:6]
+            yield _seri(f"femto/{b.name}/raw_{f.stem}", "femto", "manufacturing", _synthetic_time(len(a), 1 / 25600), a, -1,
+                        ["acc_h", "acc_v"], "row", True, note="0.1 sn ham titreşim, 25.6 kHz")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -686,7 +803,8 @@ LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, 
            "cmapss": load_cmapss, "hydraulic": load_hydraulic,
            "telecom_milan": load_telecom_milan, "bidmc": load_bidmc, "batadal": load_batadal, "mitbih": load_mitbih, "ved": load_ved, "stocks": load_stocks, "esa": load_esa,
            "bosch_cnc": load_bosch_cnc, "lbnl": load_lbnl, "ims_bearing": load_ims_bearing, "loghub": load_bgl,
-           "binance": load_binance}
+           "binance": load_binance, "ucr": load_ucr, "psm": load_psm, "damadics": load_damadics,
+           "asd": load_asd, "uci": load_uci_small, "femto": load_femto}
 
 
 # =============================================================================

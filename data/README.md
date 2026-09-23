@@ -38,6 +38,8 @@ s["raw"], s["labels"], s["meta"]
 | SKAB | 35 | 8 | 1 sn | satır | AGPL-3.0 | SKAB |
 | SKAB teaser | 1 | 8 | 1 sn | yok | AGPL-3.0 | – |
 | NAB | 58 | 1 | değişken | satır (pencere) | AGPL-3.0 | TSB-AD-U |
+| UCR Anomaly Archive | 251 | 1 | sentetik | satır (tek anomali aralığı) | akademik | UCR |
+| PSM (eBay) | 2 | 25 | 1 dk (sentetik) | satır (test) | MIT | TSB-AD-M |
 | SMAP / MSL | 110 / 54 | 25 / 55 | sentetik | hücre (telemetri), train etiketsiz | telemanom | TSB-AD-M |
 | Pump sensor | 1 | 51 | 1 dk | satır (BROKEN+RECOVERING) | belirsiz | – |
 | SMD | 56 | 38 | sentetik 1 dk | hücre, train etiketsiz | MIT | TSB-AD-M |
@@ -61,6 +63,10 @@ s["raw"], s["labels"], s["meta"]
 | IMS rulman | 93 | 4–24 | 10 dk (özellik) / 20 kHz (ham) | satır (son %8) / yok | NASA | – |
 | LBNL HVAC | 6 | ~40–90 | 1 dk | satır (arıza) | CC-BY-4.0 | – |
 | BGL log sayaçları | 1 | 4 | 1 dk | satır (alarm) | belirsiz | – |
+| DAMADICS (şeker fabrikası) | 25 | 32 | 1 sn | yok | akademik | – |
+| ASD (uygulama sunucuları) | 24 | 19 | 5 dk | satır (test) | MIT | – |
+| FEMTO rulman | ~156 | 2–6 | 10 sn (özellik) / 25.6 kHz (ham) | satır (son %8) / yok | akademik | – |
+| UCI hava kalitesi / ev enerji / doluluk | 5 | 5–28 | 1 dk – 1 saat | yok | CC-BY-4.0 | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,
