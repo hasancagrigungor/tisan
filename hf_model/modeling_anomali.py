@@ -106,15 +106,34 @@ def parse_time_column(col):
 # =============================================================================
 # Model
 # =============================================================================
+class _Attention(nn.Module):
+    """Çok başlı dikkat, F.scaled_dot_product_attention ile (flash / mem-efficient çekirdekler)."""
+
+    def __init__(self, d, n_heads, dropout):
+        super().__init__()
+        self.h, self.dk = n_heads, d // n_heads
+        self.qkv = nn.Linear(d, 3 * d)
+        self.out = nn.Linear(d, d)
+        self.dropout = dropout
+
+    def forward(self, x, key_pad):
+        # x: (N, L, d); key_pad: (N, L) True = dolgu
+        N, L, d = x.shape
+        q, k, v = self.qkv(x).reshape(N, L, 3, self.h, self.dk).permute(2, 0, 3, 1, 4)   # 3 × (N, h, L, dk)
+        mask = (~key_pad)[:, None, None, :]                                             # True = dikkat edilebilir
+        a = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0)
+        return self.out(a.transpose(1, 2).reshape(N, L, d))
+
+
 class _Block(nn.Module):
     """Pre-norm: [zaman dikkati → sütun dikkati → FFN]."""
 
     def __init__(self, d, n_heads, d_ff, dropout):
         super().__init__()
         self.n_time = nn.LayerNorm(d)
-        self.att_time = nn.MultiheadAttention(d, n_heads, dropout=dropout, batch_first=True)
+        self.att_time = _Attention(d, n_heads, dropout)
         self.n_ch = nn.LayerNorm(d)
-        self.att_ch = nn.MultiheadAttention(d, n_heads, dropout=dropout, batch_first=True)
+        self.att_ch = _Attention(d, n_heads, dropout)
         self.n_ff = nn.LayerNorm(d)
         self.ff = nn.Sequential(nn.Linear(d, d_ff), nn.GELU(), nn.Dropout(dropout), nn.Linear(d_ff, d))
         self.drop = nn.Dropout(dropout)
@@ -124,13 +143,11 @@ class _Block(nn.Module):
         B, P, C, d = h.shape
         # zaman dikkati: her sütun kendi geçmişine bakar
         x = self.n_time(h).permute(0, 2, 1, 3).reshape(B * C, P, d)
-        kpm = patch_pad.unsqueeze(1).expand(B, C, P).reshape(B * C, P)
-        a, _ = self.att_time(x, x, x, key_padding_mask=kpm, need_weights=False)
+        a = self.att_time(x, patch_pad.unsqueeze(1).expand(B, C, P).reshape(B * C, P))
         h = h + self.drop(a.reshape(B, C, P, d).permute(0, 2, 1, 3))
         # sütun dikkati: aynı andaki sütunlar birbirine bakar (pozisyon bilgisi yok)
         x = self.n_ch(h).reshape(B * P, C, d)
-        kpm = ch_pad.unsqueeze(1).expand(B, P, C).reshape(B * P, C)
-        a, _ = self.att_ch(x, x, x, key_padding_mask=kpm, need_weights=False)
+        a = self.att_ch(x, ch_pad.unsqueeze(1).expand(B, P, C).reshape(B * P, C))
         h = h + self.drop(a.reshape(B, P, C, d))
         h = h + self.drop(self.ff(self.n_ff(h)))
         return h
@@ -160,9 +177,6 @@ class AnomaliModel(PreTrainedModel):
         elif isinstance(module, nn.LayerNorm):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.MultiheadAttention):
-            nn.init.trunc_normal_(module.in_proj_weight, std=0.02)
-            nn.init.zeros_(module.in_proj_bias)
 
     # --- girdi özellikleri ---
     def _features(self, values, time_mask):
@@ -240,8 +254,10 @@ class AnomaliModel(PreTrainedModel):
             chunk = jobs[i:i + batch_size]
             vals, dts, tms, cms = zip(*[prepare_window(t[s:s + cfg.max_t], X[s:s + cfg.max_t][:, g], cfg.max_t, cfg.max_ch)
                                         for s, g in chunk])
-            out = self(torch.tensor(np.stack(vals), device=dev), torch.tensor(np.stack(dts), device=dev),
-                       torch.tensor(np.stack(tms), device=dev), torch.tensor(np.stack(cms), device=dev))
+            with torch.autocast(dev.type if hasattr(dev, "type") else str(dev).split(":")[0], dtype=torch.bfloat16,
+                                enabled=torch.cuda.is_available()):
+                out = self(torch.tensor(np.stack(vals), device=dev), torch.tensor(np.stack(dts), device=dev),
+                           torch.tensor(np.stack(tms), device=dev), torch.tensor(np.stack(cms), device=dev))
             temp = cfg.temperature if np.isfinite(cfg.temperature) and cfg.temperature > 0 else 1.0
             pr = torch.sigmoid(out["logits"] / temp).float().cpu().numpy()
             tp = torch.softmax(out["type_logits"], -1).float().cpu().numpy()
