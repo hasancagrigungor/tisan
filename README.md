@@ -182,6 +182,10 @@ Gerçek veri `gercek_veri_hazirla.py` ile ortak formata çevrilir ve `data/havuz
 
 **Kabul ölçütü:** Bir veri seti havuza girmeden önce rastgelelik testinden geçer: saat/gün dağılımı, saatlik hacimde otokorelasyon, olay aralıklarının dağılımı. Tamamen rastgele üretilmiş veride öğrenilecek "normal" yoktur (reddedilenler: Kaggle fraud işlemleri — düz dağılım, sıfır otokorelasyon, Poisson hacim; CIC-DDoS — 92 dakikalık akış tablosu; GlucoBench — nabız ve cilt sıcaklığı beyaz gürültü).
 
+**Etiket güveni (eğitim):** `-1` etiketsiz hücreler "doğrulanmış normal" sayılmaz; düşük ağırlıklı (0.05) arka plan olarak girer.
+C-MAPSS / IMS / FEMTO gibi zaman sınırından türetilen "bozulmaya yaklaşma" etiketleri zayıf etiket (0.2 ağırlık). Satır düzeyi etiketler
+hücrelere yayılmaz; pozitif satırlarda kayıp satır skoru (sütunlar üzerinde max) üzerinden hesaplanır. Bkz. `training_labels.py`.
+
 **Havuzdan eğitim örneği:** Pencere kesme havuza yazılmaz, eğitim sırasında rastgele yapılır: uzunluk 20–2048, sütun alt kümesi 1–100 (log-uniform), rastgele çözünürlük düşürme, anomalinin pencere içindeki konumu. Doğrulama seti sabit seed ile bir kez kesilir ve dosyaya yazılır.
 
 ---
@@ -294,7 +298,12 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - [x] Ortak ön işleme (`hf_model/modeling_anomali.py`: eğitim ve `detect()` aynı kodu kullanır)
 - [x] Eğitim akışı (`egitim.ipynb`): havuz + sentetik, rastgele uzunluk/sütun/çözünürlük, curriculum, focal loss
 - [x] Model iskeleti (iki eksenli dikkat, `extra_channels` ayarı, 6.4M parametre)
-- [ ] GPU'da ilk tam eğitim (20k adım); ablation: ek kanal açık/kapalı, örtüşen patch
+- [x] GPU'da ilk eğitimler (v1 6.4M, v2 6.4M + yeni veri, v3 34M): sentetikte iyi, gerçekte AUC-ROC ~0.65 tavanı
+- [x] Eğitim akışı denetimi (7 madde): etiket güveni (etiketsiz ≠ normal, zayıf etiket düşük ağırlık), satır/hücre kaybı ayrımı,
+      geçerli enjeksiyon (uygunluk + etki + çakışma kontrolü), worker'lara ulaşan curriculum, referanslı normalizasyon
+      (eğitimde %25, inference'ta dondurulabilir otomatik referans), model seçimi / kalibrasyon / test için ayrı kaynaklar,
+      satır düzeyinde kalibrasyon
+- [ ] v4 eğitimi (34M, düzeltilmiş akış); ablation: ek kanal açık/kapalı, sentetik payı, leave-one-domain-out
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
 - [x] `detect()`: ön/son işleme, kayan pencere, sütun gruplama, olaylar (çok ölçek ve örüntü özeti v2)

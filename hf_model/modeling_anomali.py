@@ -20,12 +20,14 @@ from .configuration_anomali import AnomaliConfig
 # =============================================================================
 # Ön işleme (eğitim ve inference için ortak, NumPy)
 # =============================================================================
-def robust_normalize(X):
+def robust_normalize(X, reference=None):
     """Sütun bazında medyan/MAD normalizasyonu, ±50 kırpma. NaN'lar yok sayılır."""
     X = np.asarray(X, dtype=np.float64)
-    med = np.nanmedian(X, axis=0)
-    mad = np.nanmedian(np.abs(X - med), axis=0) * 1.4826
-    std = np.nanstd(X, axis=0)
+    # GPT-6 Astra: isteğe bağlı doğrulanmış normal referans kalıcı seviye farkını korur.
+    base = X if reference is None else np.asarray(reference, dtype=np.float64)
+    med = np.nanmedian(base, axis=0)
+    mad = np.nanmedian(np.abs(base - med), axis=0) * 1.4826
+    std = np.nanstd(base, axis=0)
     sd = np.where(mad > 1e-8, mad, np.where(std > 1e-8, std, 1.0))
     return np.clip((X - med) / sd, -50, 50)
 
@@ -57,12 +59,12 @@ def fill_nan(X):
     return X
 
 
-def prepare_window(t, X, max_t, max_ch):
+def prepare_window(t, X, max_t, max_ch, reference=None):
     """(T, k) ham pencereyi model girdisine çevirir: normalize + sıfır dolgu + maskeler."""
     T, k = X.shape
     assert T <= max_t and k <= max_ch
     values = np.zeros((max_t, max_ch), dtype=np.float32)
-    values[:T, :k] = robust_normalize(fill_nan(X))
+    values[:T, :k] = robust_normalize(fill_nan(X), reference=reference)
     dtf = np.zeros(max_t, dtype=np.float32)
     dtf[:T] = delta_t_feature(t)
     time_mask = np.zeros(max_t, dtype=bool)
@@ -88,6 +90,15 @@ def aggregate_rows(cell_scores, method="topk", k=3):
     if method == "noisy_or":
         return 1 - np.prod(1 - np.clip(P, 0, 1 - 1e-6), axis=1)
     raise ValueError(method)
+
+
+def calibrate_rows(scores, temperature=1.0, bias=0.0):
+    """GPT-6 Astra: toplulaştırma SONRASI, ayrı gerçek veride öğrenilen satır kalibrasyonu."""
+    if temperature == 1.0 and bias == 0.0:
+        return np.asarray(scores)
+    p = np.clip(scores, 1e-7, 1 - 1e-7)
+    z = (np.log(p) - np.log1p(-p)) / temperature + bias
+    return 1 / (1 + np.exp(-np.clip(z, -60, 60)))
 
 
 def parse_time_column(col):
@@ -189,7 +200,8 @@ class AnomaliModel(PreTrainedModel):
         return torch.stack(feats, dim=-1)                       # (B, T, C, F)
 
     def forward(self, values, delta_t, time_mask, channel_mask, labels=None, types=None,
-                focal_gamma=2.0, focal_alpha=0.75, type_weight=0.5):
+                focal_gamma=2.0, focal_alpha=0.75, type_weight=0.5,
+                label_weights=None, row_labels=None, row_weights=None):
         """
         values (B,T,C) float · delta_t (B,T) · time_mask (B,T) bool · channel_mask (B,C) bool
         T, patch'in katı olmalı; T ≤ max_t, C ≤ max_ch. Dolgu sağda ve sağ sütunlarda.
@@ -217,14 +229,25 @@ class AnomaliModel(PreTrainedModel):
         result = {"logits": logits, "type_logits": type_logits}
         if labels is not None:
             valid = time_mask[:, :, None] & channel_mask[:, None, :]
-            y = labels.float()
+            # GPT-6 Astra: bilinmeyen ve satır düzeyindeki etiketler hücre hedefi değildir.
+            y = labels.clamp(min=0).float()
+            weights = valid * (labels >= 0)
+            if label_weights is not None:
+                weights = weights * label_weights
             bce = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
             pt = torch.exp(-bce)
-            alpha = torch.where(y > 0.5, torch.full_like(y, focal_alpha), torch.full_like(y, 1 - focal_alpha))
+            alpha = torch.where(y > 0.5, focal_alpha, 1 - focal_alpha)
             focal = alpha * (1 - pt) ** focal_gamma * bce
-            loss = (focal * valid).sum() / valid.sum().clamp(min=1)
+            # Güven ağırlığını paydada iptal etme: zayıf örnek gerçekten daha az katkı verir.
+            loss = (focal * weights).sum() / valid.sum().clamp(min=1)
+            if row_labels is not None and row_weights is not None:
+                # En az bir kanal anormal: satır etiketi tüm hücreleri pozitif yapmaz.
+                row_logits = logits.masked_fill(~channel_mask[:, None, :], -1e4).amax(-1)
+                rbce = F.binary_cross_entropy_with_logits(row_logits, row_labels.clamp(min=0).float(), reduction="none")
+                rw = row_weights * time_mask * (row_labels >= 0)
+                loss = loss + (rbce * rw).sum() / time_mask.sum().clamp(min=1)
             if types is not None:
-                tmask = valid & (labels > 0) & (types > 0)
+                tmask = valid & (labels > 0) & (types > 0) & (weights > 0)
                 if tmask.any():
                     ce = F.cross_entropy(type_logits[tmask], types[tmask].long(), reduction="mean")
                     loss = loss + type_weight * ce
@@ -235,13 +258,38 @@ class AnomaliModel(PreTrainedModel):
     # Inference
     # =========================================================================
     @torch.no_grad()
-    def score_matrix(self, t, X, batch_size=8, stride=None):
-        """(T, k) ham matris → (T, k) kalibre hücre olasılığı ve (T, k) tür id.
-        Uzun veri kayan pencere, çok sütun 100'lük gruplarla işlenir."""
+    def _score_windows(self, jobs, t, X, batch_size, ref_of):
+        """jobs: [(s, g)]; ref_of(s, g) → (T_ref, |g|) ham referans ya da None."""
+        cfg = self.config
+        dev = next(self.parameters()).device
+        out_pr, out_tp = [], []
+        for i in range(0, len(jobs), batch_size):
+            chunk = jobs[i:i + batch_size]
+            vals, dts, tms, cms = zip(*[prepare_window(t[s:s + cfg.max_t], X[s:s + cfg.max_t][:, g], cfg.max_t, cfg.max_ch,
+                                                       reference=ref_of(s, g)) for s, g in chunk])
+            with torch.autocast(dev.type if hasattr(dev, "type") else str(dev).split(":")[0], dtype=torch.bfloat16,
+                                enabled=torch.cuda.is_available()):
+                out = self(torch.tensor(np.stack(vals), device=dev), torch.tensor(np.stack(dts), device=dev),
+                           torch.tensor(np.stack(tms), device=dev), torch.tensor(np.stack(cms), device=dev))
+            temp = cfg.temperature if np.isfinite(cfg.temperature) and cfg.temperature > 0 else 1.0
+            out_pr += list(torch.sigmoid(out["logits"] / temp).float().cpu().numpy())
+            out_tp += list(torch.softmax(out["type_logits"], -1).float().cpu().numpy())
+        return out_pr, out_tp
+
+    @torch.no_grad()
+    def score_matrix(self, t, X, batch_size=8, stride=None, reference=None):
+        """(T, k) ham matris → (T, k) hücre olasılığı ve (T, k) tür id. Uzun veri kayan pencere,
+        çok sütun 100'lük gruplarla işlenir.
+        Referans normalizasyonu: `reference` verilmişse her pencere onunla normalize edilir. Verilmemiş ve
+        config.auto_reference açıksa pencereler zaman sırasıyla işlenir; referans, son "normal" görünen
+        pencerenin ham değerleridir ve anomali sürdüğü sürece dondurulur (kalıcı anomali "yeni normal" olmaz)."""
         cfg = self.config
         T, k = X.shape
+        if reference is not None:
+            reference = np.asarray(reference, dtype=np.float64)
+            if reference.ndim != 2 or reference.shape[1] != k or len(reference) < cfg.min_t or not np.isfinite(reference).all():
+                raise ValueError("normal referans en az min_t satır, aynı sütunlar ve sonlu değerler içermeli")
         stride = stride or cfg.max_t // 2
-        dev = next(self.parameters()).device
         prob = np.zeros((T, k), dtype=np.float32)
         tsum = np.zeros((T, k, cfg.n_types), dtype=np.float32)
         wsum = np.zeros((T, 1), dtype=np.float32)
@@ -249,29 +297,38 @@ class AnomaliModel(PreTrainedModel):
         if T > cfg.max_t and starts[-1] + cfg.max_t < T:
             starts.append(T - cfg.max_t)
         ch_groups = [list(range(a, min(a + cfg.max_ch, k))) for a in range(0, k, cfg.max_ch)]
-        jobs = [(s, g) for s in starts for g in ch_groups]
-        for i in range(0, len(jobs), batch_size):
-            chunk = jobs[i:i + batch_size]
-            vals, dts, tms, cms = zip(*[prepare_window(t[s:s + cfg.max_t], X[s:s + cfg.max_t][:, g], cfg.max_t, cfg.max_ch)
-                                        for s, g in chunk])
-            with torch.autocast(dev.type if hasattr(dev, "type") else str(dev).split(":")[0], dtype=torch.bfloat16,
-                                enabled=torch.cuda.is_available()):
-                out = self(torch.tensor(np.stack(vals), device=dev), torch.tensor(np.stack(dts), device=dev),
-                           torch.tensor(np.stack(tms), device=dev), torch.tensor(np.stack(cms), device=dev))
-            temp = cfg.temperature if np.isfinite(cfg.temperature) and cfg.temperature > 0 else 1.0
-            pr = torch.sigmoid(out["logits"] / temp).float().cpu().numpy()
-            tp = torch.softmax(out["type_logits"], -1).float().cpu().numpy()
-            for (s, g), pw, tw in zip(chunk, pr, tp):
-                L = min(cfg.max_t, T - s)
-                # pencere ortası daha güvenilir: üçgen ağırlık
-                w = (1 - np.abs(np.linspace(-1, 1, L))) * 0.9 + 0.1
-                prob[s:s + L, g] += pw[:L, :len(g)] * w[:, None]
-                tsum[s:s + L, g] += tw[:L, :len(g)] * w[:, None, None]
-                wsum[s:s + L] += w[:, None] / len(ch_groups)
+
+        def accumulate(s, g, pw, tw):
+            L = min(cfg.max_t, T - s)
+            w = (1 - np.abs(np.linspace(-1, 1, L))) * 0.9 + 0.1          # pencere ortası daha güvenilir
+            prob[s:s + L, g] += pw[:L, :len(g)] * w[:, None]
+            tsum[s:s + L, g] += tw[:L, :len(g)] * w[:, None, None]
+            wsum[s:s + L] += w[:, None] / len(ch_groups)
+
+        auto = reference is None and cfg.auto_reference and len(starts) > 1
+        if not auto:
+            jobs = [(s, g) for s in starts for g in ch_groups]
+            ref_of = (lambda s, g: None) if reference is None else (lambda s, g: reference[:, g])
+            prs, tps = self._score_windows(jobs, t, X, batch_size, ref_of)
+            for (s, g), pw, tw in zip(jobs, prs, tps):
+                accumulate(s, g, pw, tw)
+        else:
+            # zaman sırasında, grup başına dondurulabilir referans; ardışık pencereler batch'lenmez (bağımlılık var)
+            for g in ch_groups:
+                ref = None
+                for s in starts:
+                    pw, tw = self._score_windows([(s, g)], t, X, 1, lambda s_, g_: ref)
+                    pw, tw = pw[0], tw[0]
+                    accumulate(s, g, pw, tw)
+                    L = min(cfg.max_t, T - s)
+                    tail = aggregate_rows(pw[L * 3 // 4:L, :len(g)], cfg.row_agg, cfg.row_topk)
+                    if tail.max() < cfg.reference_threshold:              # pencere sonu normal → referansı ilerlet
+                        ref = fill_nan(X[s:s + L][:, g])
+                    # aksi hâlde referans dondurulur: olay sürerken "yeni normal" öğrenilmez
         prob /= np.maximum(wsum, 1e-8)
         return prob, tsum.argmax(-1)
 
-    def detect(self, matrix, sensitivity="medium", batch_size=8):
+    def detect(self, matrix, sensitivity="medium", batch_size=8, normal_reference=None):
         """Kullanıcı arayüzü. matrix: (T, 1+k); ilk sütun zaman damgası."""
         cfg = self.config
         M = np.asarray(matrix)
@@ -298,19 +355,21 @@ class AnomaliModel(PreTrainedModel):
             types = np.where(prob > thr, cfg.type_names.index("spike"), 0)
             note = f"{T} satır < {cfg.min_t}: model yerine robust z-skoru kullanıldı"
         else:
-            prob, types = self.score_matrix(t, X, batch_size=batch_size)
+            prob, types = self.score_matrix(t, X, batch_size=batch_size, reference=normal_reference)
             note = None
         return AnomaliResult(t, X, order, prob, types, thr, cfg.type_names, note,
-                             row_agg=cfg.row_agg, row_topk=cfg.row_topk)
+                             row_agg=cfg.row_agg, row_topk=cfg.row_topk,
+                             row_temperature=cfg.row_temperature if T >= cfg.min_t else 1.0,
+                             row_bias=cfg.row_bias if T >= cfg.min_t else 0.0)
 
 
 class AnomaliResult:
     def __init__(self, t, X, order, cell_scores, cell_types, threshold, type_names, note=None,
-                 row_agg="topk", row_topk=3):
+                 row_agg="topk", row_topk=3, row_temperature=1.0, row_bias=0.0):
         self.timestamps, self.values, self.order = t, X, order
         self.cell_scores, self.cell_types = cell_scores, cell_types
         self.threshold, self.type_names, self.note = threshold, type_names, note
-        self.row_scores = aggregate_rows(cell_scores, row_agg, row_topk)
+        self.row_scores = calibrate_rows(aggregate_rows(cell_scores, row_agg, row_topk), row_temperature, row_bias)
         self.anomaly_rows = np.where(self.row_scores > threshold)[0].tolist()
         self.events = self._events()
 

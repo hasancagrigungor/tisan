@@ -196,12 +196,33 @@ class Ctx:
 # =============================================================================
 # Genel (alandan bağımsız) anomaliler
 # =============================================================================
-def generic_anomaly(ctx, kind=None):
+def _partner(X, c, min_corr=0.5):
+    """c ile en güçlü doğrusal ilişkili sütun; |korelasyon| < min_corr ise None."""
+    if X.shape[1] < 2:
+        return None
+    x = X[:, c]
+    if x.std() < 1e-9:
+        return None
+    best, best_r = None, 0.0
+    for j in range(X.shape[1]):
+        if j == c or X[:, j].std() < 1e-9:
+            continue
+        r = abs(np.corrcoef(x, X[:, j])[0, 1])
+        if np.isfinite(r) and r > best_r:
+            best, best_r = j, r
+    return best if best_r >= min_corr else None
+
+
+def generic_anomaly(ctx, kind=None, min_effect=0.3):
+    """Alandan bağımsız anomali enjeksiyonu. Uygunluk (önce) ve etki (sonra) kontrolü yapar;
+    geçersizse veriyi geri alır, etiket vermez ve False döner. Etiketli bölgeyle üst üste binmez."""
     rng, X, T, k = ctx.rng, ctx.X, ctx.T, ctx.k
     kind = kind or str(rng.choice(GENERIC_KINDS))
-    if kind == "correlation_break" and k < 2:
-        kind = "spike"
-    c = int(rng.integers(k))
+    if kind == "correlation_break":
+        cands = [c for c in range(k) if _partner(X, c) is not None]
+        if not cands:
+            kind = "spike"
+    c = int(rng.choice(cands)) if kind == "correlation_break" else int(rng.integers(k))
     x = X[:, c]
     sd = ctx.sd(c)
     strength = rng.uniform(3, 6) * ctx.f * 1.6
@@ -213,6 +234,11 @@ def generic_anomaly(ctx, kind=None):
         s, e = ctx.segment(5, 0.3, PERSISTENT_RATIO if kind in PERSISTENT_OK else 0.0)
     L = e - s
     seg = slice(s, e)
+    if ctx.labels[s:e, c].any():                       # üst üste binme: önceki etiket bozulmasın
+        return False
+    if kind in ("flatline", "pattern_change") and robust_std(x[seg]) < 1e-6:   # zaten sabit bölge
+        return False
+    before = x[seg].copy()
     variant = rng.random()      # gerçek arızalara benzeyen ince alt varyantlar (~%35)
     if kind == "spike":
         x[seg] += sign * strength * sd
@@ -241,11 +267,44 @@ def generic_anomaly(ctx, kind=None):
         p = rng.uniform(3, max(4.0, L / 2))
         x[seg] = np.median(x[seg]) + 1.5 * sd * np.sin(2 * np.pi * np.arange(L) / p)
     elif kind == "correlation_break":
-        s2 = int(rng.integers(0, T - L + 1))
-        if abs(s2 - s) < L:
-            s2 = (s + L + int(rng.integers(0, T))) % (T - L + 1)
-        x[seg] = x[s2:s2 + L].copy()
+        # gerçekten ilişkili olduğu sütunla bağı kopar: kendi geçmişinden kopya ya da ters işaretli izleme
+        j = _partner(X, c)
+        if variant < 0.5:
+            s2 = int(rng.integers(0, T - L + 1))
+            if abs(s2 - s) < L:
+                s2 = (s + L + int(rng.integers(0, T))) % (T - L + 1)
+            x[seg] = x[s2:s2 + L].copy()
+        else:
+            partner = X[seg, j]
+            x[seg] = np.median(x[seg]) - (partner - np.median(partner)) * (sd / max(robust_std(partner), 1e-9))
+    # etki kontrolü: değişim serinin oynaklığına göre anlamlı değilse geri al
+    effect = np.mean(np.abs(x[seg] - before)) / max(sd, 1e-9)
+    if kind == "flatline":
+        effect = robust_std(before) / max(sd, 1e-9)         # sabitleme: önceki oynaklık kaybı
+    if not np.isfinite(effect) or effect < min_effect:
+        x[seg] = before
+        return False
     ctx.mark(s, e, [c], kind)
+    return True
+
+
+def safe_inject(ctx, op, blocked=None, **kw):
+    """Enjeksiyon sarmalayıcısı: op(ctx) çalıştırılır; yeni etiket üretmediyse, etiketlediği hücreler
+    `blocked` (dokunulmaması gereken gerçek pozitif bölge) ile çakışıyorsa ya da etiketlediği hücrelerin
+    çoğu değişmediyse veri/etiket geri alınır ve False döner."""
+    X0, L0, T0 = ctx.X.copy(), ctx.labels.copy(), ctx.types.copy()
+    try:
+        ok = op(ctx, **kw)
+    except Exception:
+        ok = False
+    new = (ctx.labels == 1) & (L0 != 1)
+    changed = np.abs(ctx.X - X0) > 1e-9
+    bad = (not ok) or (not new.any()) \
+        or (blocked is not None and (new & np.asarray(blocked, dtype=bool)).any()) \
+        or ((new & ~changed).sum() > 0.5 * new.sum() and not (ctx.types[new] == TYPE_ID["flatline"]).all())
+    if bad:
+        ctx.X[:], ctx.labels[:], ctx.types[:] = X0, L0, T0
+        return False
     return True
 
 
@@ -1708,9 +1767,11 @@ def make_sample(rng, difficulty=0.5, n_channels=None, length=None, force_anomaly
     if has_anom:
         for _ in range(int(rng.integers(1, 4))):
             use_domain = dom["scenarios"] and (domain_scenarios_only or rng.random() < DOMAIN_SCENARIO_RATIO)
-            if not (use_domain and dom["scenarios"][int(rng.integers(len(dom["scenarios"])))](ctx)):
-                if not domain_scenarios_only:
-                    generic_anomaly(ctx)
+            operation = dom["scenarios"][int(rng.integers(len(dom["scenarios"])))] if use_domain else generic_anomaly
+            if not safe_inject(ctx, operation) and not domain_scenarios_only:
+                for _attempt in range(5):
+                    if safe_inject(ctx, generic_anomaly):
+                        break
     X, labels, types = ctx.X, ctx.labels, ctx.types
 
     # Sütun sırasını karıştır: model pozisyon ezberlemesin

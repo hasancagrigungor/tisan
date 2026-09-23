@@ -80,6 +80,9 @@ def _seri(sid, source, sector, t, X, labels, names, label_level, synthetic_time,
         "value": X.ravel(),
         "label": labels.ravel(),
     })
+    # GPT-6 Astra: zaman sınırından türetilen etiketler doğrulanmış arıza etiketi değildir.
+    meta.setdefault("label_confidence", 0.2 if source in {"cmapss", "ims_bearing", "femto"} else 1.0)
+    meta.setdefault("label_quality", "weak" if source in {"cmapss", "ims_bearing", "femto"} else "source")
     row = labels.max(axis=1)
     kat = dict(series_id=sid, source=source, sector=sector, n_rows=T, n_channels=k,
                step_s=float(np.median(np.diff(t))) if T > 1 else np.nan,
