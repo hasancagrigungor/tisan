@@ -46,7 +46,10 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "smap": "telemanom (Apache-2.0), veri NASA", "msl": "telemanom (Apache-2.0), veri NASA",
           "pump": "belirsiz (Kaggle: unknown)", "smd": "MIT", "cnc": "CC0-1.0",
           "wind_gearbox": "Apache-2.0", "hai": "CC-BY-SA-4.0", "metropt": "CC-BY-4.0",
-          "cats": "CC-BY-4.0", "tep": "CC-BY-4.0 (Rieth vd. 2017, simülasyon)"}
+          "cats": "CC-BY-4.0", "tep": "CC-BY-4.0 (Rieth vd. 2017, simülasyon)",
+          "cmapss": "CC0 / NASA kamu malı", "hydraulic": "CC-BY-4.0 (UCI)", "telecom_milan": "CC-BY (Telecom Italia)",
+          "bidmc": "ODC-BY 1.0 (PhysioNet)", "mitbih": "ODC-BY 1.0 (PhysioNet)", "batadal": "belirsiz (BATADAL yarışması)",
+          "ved": "Apache-2.0", "glucobench": "belirsiz (Kaggle)", "stocks": "CC0-1.0"}
 
 
 def _unix(s):
@@ -319,6 +322,72 @@ def load_tep(runs_per_fault=25, normal_runs=50):
                             note=f"simülasyon; arıza {int(fault)} 20. örnekten sonra (0 = arızasız)")
 
 
+def load_cmapss(last_cycles=25):
+    """NASA C-MAPSS turbofan: motor başına çalışma-arıza koşusu, 21 sensör + 3 ayar, 1 satır = 1 uçuş.
+    Etiket: son `last_cycles` çevrim (arızaya yaklaşan bozulma) = 1. Zaman sentetik (1 çevrim = 1 saat)."""
+    base = RAW / "cmapss" / "CMaps"
+    cols = ["unit", "cycle", "op1", "op2", "op3"] + [f"s{i}" for i in range(1, 22)]
+    for fd in ("FD001", "FD002", "FD003", "FD004"):
+        d = pd.read_csv(base / f"train_{fd}.txt", sep=r"\s+", header=None, names=cols)
+        for unit, g in d.groupby("unit"):
+            g = g.sort_values("cycle")
+            X = g[cols[2:]].to_numpy()
+            X = X[:, X.std(0) > 0]
+            names = [c for c, ok in zip(cols[2:], d.loc[g.index, cols[2:]].std(0) > 0) if ok]
+            T = len(g)
+            lab = np.zeros(T, dtype=np.int8)
+            lab[-last_cycles:] = 1
+            yield _seri(f"cmapss/{fd}/unit{int(unit)}", "cmapss", "manufacturing", _synthetic_time(T, 3600.0), X, lab,
+                        names, "row", True, note=f"turbofan çalışma-arıza; son {last_cycles} çevrim etiketli")
+
+
+def load_hydraulic():
+    """UCI hidrolik test düzeneği: 2205 çevrim × 60 sn, 17 sensör (100/10/1 Hz). Hepsi 1 Hz'e indirilip
+    çevrimler art arda eklenir. Koşullar deney tasarımı (DOE) ile eşit dağıtıldığı için anomali etiketi
+    verilmez (-1); imalat arka planı olarak kullanılır."""
+    base = RAW / "hydraulic"
+    names = ["PS1", "PS2", "PS3", "PS4", "PS5", "PS6", "EPS1", "FS1", "FS2", "TS1", "TS2", "TS3", "TS4", "VS1", "CE", "CP", "SE"]
+    cols = []
+    for n in names:
+        a = np.loadtxt(base / f"{n}.txt")                  # (2205, 60·Hz)
+        f = a.shape[1] // 60
+        cols.append(a.reshape(a.shape[0], 60, f).mean(2).reshape(-1))
+    X = np.column_stack(cols)
+    yield _seri("hydraulic/0", "hydraulic", "manufacturing", _synthetic_time(len(X), 1.0), X, -1, names, "row", True,
+                note="çevrimler art arda; koşullar (soğutucu/valf/kaçak/akümülatör) profile.txt'de, DOE → etiketsiz")
+
+
+def load_telecom_milan(n_cells=400):
+    """Telecom Italia Milano (Kaggle sürümü): saatlik, hücre bazında SMS/çağrı/internet, 7 gün.
+    Ülke kodları toplanır; en yoğun n_cells hücre alınır. Etiketsiz telekom arka planı."""
+    base = RAW / "telecom_milan"
+    files = sorted(base.glob("sms-call-internet-mi-*.csv"))
+    d = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    ch = ["smsin", "smsout", "callin", "callout", "internet"]
+    agg = d.groupby(["CellID", "datetime"])[ch].sum(min_count=1).reset_index()
+    top = agg.groupby("CellID")[ch].count().sum(1).sort_values(ascending=False).index[:n_cells]
+    for cell in top:
+        g = agg[agg.CellID == cell].sort_values("datetime")
+        yield _seri(f"telecom_milan/cell{int(cell)}", "telecom_milan", "telecom", _unix(g["datetime"]),
+                    g[ch].to_numpy(), -1, ch, "row", False, note="etiketsiz; saatlik hücre trafiği (1 hafta)")
+
+
+def load_bidmc():
+    """BIDMC (PhysioNet): 53 yoğun bakım hastası, 8 dk. Signals 125 Hz (RESP, PLETH, EKG V/AVR/II),
+    Numerics 1 Hz (HR, PULSE, RESP, SpO2). Etiketsiz sağlık arka planı."""
+    base = next(RAW.glob("bidmc/*/bidmc_csv"))
+    for f in sorted(base.glob("bidmc_*_Signals.csv")):
+        rid = f.name.split("_")[1]
+        sig = pd.read_csv(f); sig.columns = sig.columns.str.strip()
+        names = [c for c in sig.columns if c != "Time [s]"]
+        yield _seri(f"bidmc/{rid}/signals", "bidmc", "ecg", sig["Time [s]"].to_numpy(dtype=float), sig[names].to_numpy(),
+                    -1, names, "row", True, note="125 Hz dalga formu (EKG, PPG, solunum); zaman kayıt başından itibaren")
+        num = pd.read_csv(f.with_name(f"bidmc_{rid}_Numerics.csv")); num.columns = num.columns.str.strip()
+        names = [c for c in num.columns if c != "Time [s]"]
+        yield _seri(f"bidmc/{rid}/numerics", "bidmc", "vitals", num["Time [s]"].to_numpy(dtype=float), num[names].to_numpy(),
+                    -1, names, "row", True, note="1 Hz vital bulgular")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -410,7 +479,9 @@ def load_lotsa(subset, path):
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
            "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox,
-           "hai": load_hai, "metropt": load_metropt, "cats": load_cats, "tep": load_tep}
+           "hai": load_hai, "metropt": load_metropt, "cats": load_cats, "tep": load_tep,
+           "cmapss": load_cmapss, "hydraulic": load_hydraulic,
+           "telecom_milan": load_telecom_milan, "bidmc": load_bidmc}
 
 
 # =============================================================================

@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers import PreTrainedModel
 
 from .configuration_anomali import AnomaliConfig
@@ -137,6 +138,7 @@ class _Block(nn.Module):
 
 class AnomaliModel(PreTrainedModel):
     config_class = AnomaliConfig
+    supports_gradient_checkpointing = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -191,7 +193,10 @@ class AnomaliModel(PreTrainedModel):
         patch_valid = time_mask.reshape(B, P, p).any(-1)
         patch_pad, ch_pad = ~patch_valid, ~channel_mask
         for blk in self.blocks:
-            h = blk(h, patch_pad, ch_pad)
+            if self.training and getattr(self, "gradient_checkpointing", False):
+                h = checkpoint(blk, h, patch_pad, ch_pad, use_reentrant=False)
+            else:
+                h = blk(h, patch_pad, ch_pad)
         out = self.head(self.norm(h))                                       # (B,P,C,p*(1+K))
         out = out.reshape(B, P, C, p, 1 + cfg.n_types).permute(0, 1, 3, 2, 4).reshape(B, T, C, 1 + cfg.n_types)
         logits, type_logits = out[..., 0], out[..., 1:]
