@@ -291,14 +291,14 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - [x] Çok alanlı sentetik veri üreticisi (16 alan, alana özgü senaryolar)
 - [x] Veri havuzu formatı, açık veri setleri (SKAB, NAB, SMAP/MSL, SMD, Pump, CNC, LOTSA)
 - [ ] 50 sektör verisinin havuza eklenmesi
-- [ ] `onisleme.py`: eğitim ve inference için ortak ön işleme
-- [ ] PyTorch `Dataset`: havuz + sentetik, rastgele uzunluk/sütun/çözünürlük; sabit doğrulama seti
-- [ ] Model iskeleti (iki eksenli dikkat, `extra_channels` ayarı)
-- [ ] Küçük modelle ilk eğitim; ablation: ek kanal açık/kapalı, örtüşen patch
+- [x] Ortak ön işleme (`hf_model/modeling_anomali.py`: eğitim ve `detect()` aynı kodu kullanır)
+- [x] Eğitim akışı (`egitim.ipynb`): havuz + sentetik, rastgele uzunluk/sütun/çözünürlük, curriculum, focal loss
+- [x] Model iskeleti (iki eksenli dikkat, `extra_channels` ayarı, 6.4M parametre)
+- [ ] GPU'da ilk tam eğitim (20k adım); ablation: ek kanal açık/kapalı, örtüşen patch
 - [ ] Benchmark'larda rakiplerle karşılaştırma
-- [ ] Kalibrasyon
-- [ ] `detect()`: ön/son işleme, kayan pencere, çok ölçek, olaylar, örüntü özeti
-- [ ] HF'ye yükleme (remote code) ve model kartı
+- [x] Kalibrasyon (temperature scaling, defterde)
+- [x] `detect()`: ön/son işleme, kayan pencere, sütun gruplama, olaylar (çok ölçek ve örüntü özeti v2)
+- [x] HF'ye yükleme (remote code) ve model kartı (defterde)
 - [ ] Gradio Space demosu
 - [ ] v0.1 yayını, blog yazısı / arXiv makalesi, geri bildirim toplama
 - [ ] v2: güçlü çok değişkenli ilişkiler, akış (streaming) modu, sağlık skoru
@@ -316,7 +316,9 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 | `ornek_egitim_verisi.csv` | Kullanıcı biçiminde örnek: timestamp, değerler, satır bazında `anomali`, `tur`, `sutunlar` |
 | `alan_ornekleri.png` | Her alandan bir eğitim örneği ve enjekte edilen anomaliler |
 | `gercek_veri_hazirla.py` | Gerçek veri setlerini (`data/raw`) ortak havuz formatına çevirir; `seri_yukle()` ile okunur |
-| `data/` | Veri havuzu: ham indirmeler, gerçek ve sentetik veri, katalog (bkz. `data/README.md`) |
+| `data/` | Veri havuzu: gerçek ve sentetik veri, katalog (bkz. `data/README.md`); HF kopyası `cagrigungor/tisan-havuz` |
+| `hf_model/` | HF uzak kod: `configuration_anomali.py`, `modeling_anomali.py` (ortak ön işleme + iki eksenli dikkat + `detect()`) |
+| `egitim.ipynb` | Eğitim defteri: HF havuzu + sentetik → eğitim, kalibrasyon, benchmark, HF'ye yükleme. Colab'da GPU ile çalışır |
 
 ```bash
 python egitim_verisi_uretici.py
