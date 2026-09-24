@@ -78,7 +78,7 @@ def aggregate_rows(cell_scores, method="topk", k=3):
     """(T, k) hücre olasılığı → (T,) satır skoru.
     max: en yüksek hücre (çok sütunda yanlış pozitife açık)
     topk: en yüksek k hücrenin ortalaması (k > sütun sayısıysa max'a düşer)
-    noisy_or: 1 - Π(1 - p): bağımsız kanıtları birleştirir"""
+    noisy_or: en yüksek k hücrede 1 - Π(1 - p); tüm kanallarda alınırsa 20+ kanalda 1'e doyar"""
     P = np.asarray(cell_scores, dtype=np.float64)
     if P.ndim == 1 or P.shape[1] == 1:
         return P.reshape(len(P))
@@ -87,8 +87,10 @@ def aggregate_rows(cell_scores, method="topk", k=3):
     if method == "topk":
         kk = min(k, P.shape[1])
         return np.sort(P, axis=1)[:, -kk:].mean(1)
-    if method == "noisy_or":
-        return 1 - np.prod(1 - np.clip(P, 0, 1 - 1e-6), axis=1)
+    if method == "noisy_or":                                            # en yüksek k hücre üzerinden: çok kanalda doymaz
+        kk = min(max(k, 1), P.shape[1])
+        top = np.sort(np.clip(P, 0, 1 - 1e-6), axis=1)[:, -kk:]
+        return 1 - np.prod(1 - top, axis=1)
     raise ValueError(method)
 
 

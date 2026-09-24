@@ -259,8 +259,11 @@ def generic_anomaly(ctx, kind=None, min_effect=0.3):
         else:
             x[seg] += sign * strength * sd * np.linspace(0, 1, L)
     elif kind == "noise_burst":
-        if variant < 0.35:      # varyans artışı yavaş yavaş gelir (aşınma)
+        if variant < 0.25:      # varyans artışı yavaş yavaş gelir (aşınma)
             x[seg] += rng.normal(0, 1, L) * strength * sd * 0.5 * np.linspace(0.2, 1, L)
+        elif variant < 0.5:     # varyans ÇÖKÜŞÜ: seri sakinleşir (sunucu arızası, akış durması); "sakin = normal" kısayolunu kırar
+            base = np.median(x[max(0, s - L):s]) if s > 0 else np.median(x[seg])
+            x[seg] = base + (x[seg] - np.median(x[seg])) * rng.uniform(0.0, 0.15)
         else:
             x[seg] += rng.normal(0, strength * sd * 0.5, L)
     elif kind == "pattern_change":
