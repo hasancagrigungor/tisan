@@ -294,7 +294,7 @@ class AnomaliModel(PreTrainedModel):
                 rbce = F.binary_cross_entropy_with_logits(row_logits, row_labels.clamp(min=0).float(), reduction="none")
                 rw = row_weights * time_mask * (row_labels >= 0)
                 loss = loss + (rbce * rw).sum() / time_mask.sum().clamp(min=1)
-            if types is not None:
+            if types is not None and getattr(cfg, "use_types", False) and type_weight > 0:
                 tmask = valid & (labels > 0) & (types > 0) & (weights > 0)
                 if tmask.any():
                     ce = F.cross_entropy(type_logits[tmask], types[tmask].long(), reduction="mean")
@@ -378,6 +378,15 @@ class AnomaliModel(PreTrainedModel):
         prob /= np.maximum(wsum, 1e-8)
         return prob, tsum.argmax(-1)
 
+    def predict(self, matrix, sensitivity="medium", batch_size=8, normal_reference=None):
+        """Birincil API: (T, 1+k) matris → (T,) 0/1 vektörü. 1 = bu satırda anomali var.
+        Alan bilgisi gerekmez; finans, sensör, siber güvenlik ya da bilinmeyen veri aynı şekilde işlenir."""
+        r = self.detect(matrix, sensitivity=sensitivity, batch_size=batch_size, normal_reference=normal_reference)
+        out = np.zeros(len(r.row_scores), dtype=np.int8)
+        out[r.anomaly_rows] = 1
+        inv = np.empty_like(r.order); inv[r.order] = np.arange(len(r.order))     # kullanıcının satır sırasına geri dön
+        return out[inv] if len(inv) == len(out) else out
+
     def detect(self, matrix, sensitivity="medium", batch_size=8, normal_reference=None):
         """Kullanıcı arayüzü. matrix: (T, 1+k); ilk sütun zaman damgası."""
         cfg = self.config
@@ -407,6 +416,8 @@ class AnomaliModel(PreTrainedModel):
         else:
             prob, types = self.score_matrix(t, X, batch_size=batch_size, reference=normal_reference)
             note = None
+        if not getattr(cfg, "use_types", False):
+            types = np.zeros_like(types)                                        # tür başlığı kapalı: tür bilgisi yok
         return AnomaliResult(t, X, order, prob, types, thr, cfg.type_names, note,
                              row_agg=cfg.row_agg, row_topk=cfg.row_topk,
                              row_temperature=cfg.row_temperature if T >= cfg.min_t else 1.0,
@@ -434,7 +445,7 @@ class AnomaliResult:
             cells = self.cell_scores[s:e + 1] > self.threshold
             chans = np.where(cells.any(0))[0].tolist()
             ty = self.cell_types[s:e + 1][cells]
-            kind = self.type_names[int(np.bincount(ty).argmax())] if len(ty) else "unknown"
+            kind = self.type_names[int(np.bincount(ty).argmax())] if len(ty) and ty.max() > 0 else "anomaly"
             events.append({"start": s, "end": e, "start_time": float(self.timestamps[s]), "end_time": float(self.timestamps[e]),
                            "type": kind, "channels": chans, "confidence": float(self.row_scores[s:e + 1].max()),
                            "reason": f"{len(chans)} sütunda {kind}; {e - s + 1} satır boyunca beklenen davranıştan sapma"})

@@ -6,7 +6,8 @@ Herhangi bir sektörden gelen sayısal zaman serisi verisinde, **hiç eğitim, e
 from transformers import AutoModel
 
 model = AutoModel.from_pretrained("kullanici/anomali-small", trust_remote_code=True)
-sonuc = model.detect(matris)   # ilk sütun timestamp, geri kalanlar değerler
+y = model.predict(matris)      # ilk sütun timestamp, geri kalanlar değerler → (T,) 0/1 vektörü
+sonuc = model.detect(matris)   # isteğe bağlı ayrıntı: skorlar, hangi sütun, olaylar
 ```
 
 ---
@@ -61,6 +62,10 @@ Arka planda otomatik yapılanlar: zaman biçimi tanıma, sıralama, tekrarlı za
 
 ### Çıktı
 
+**Birincil çıktı `predict()`:** satır başına 0/1. Model alanı bilmez ve bilmesi gerekmez; finans, sensör, siber güvenlik ya da hiç görülmemiş bir veri aynı yoldan geçer.
+
+`detect()` ayrıntı isteyenler için:
+
 ```python
 sonuc.anomaly_rows    # [4, 120, 121, 122]         hızlı bakış
 sonuc.row_scores      # (T,)                       satır başına kalibre skor
@@ -87,9 +92,11 @@ Olay örneği:
  "volatility": "low", "typical_range": [20.8, 23.1]}
 ```
 
-### Anomali türleri
+### Anomali türleri (isteğe bağlı, varsayılan kapalı)
 
 `spike` · `level_shift` · `flatline` · `drift` · `noise_burst` · `pattern_change` · `correlation_break` · `missing_data`
+
+Tür yalnızca sentetik etiketlerden öğrenilebilir (gerçek verinin türü yok) ve eğitim kapasitesini böler; `use_types=False` ile kapalı. Çıktı türü `"anomaly"`.
 
 ### Sorumluluk dağılımı
 
@@ -110,7 +117,7 @@ Girdi (T, 1+k)
   → k sütun robust normalize edilir, 100'e tamamlanır (0 + maske)
   → Patch gömme (16 nokta = 1 token, ağırlıklar tüm sütunlarda ortak)
   → [Zaman dikkati → Sütun dikkati] × N katman
-  → Çıkış başlıkları: (T, 100) anomali olasılığı + anomali türü
+  → Çıkış başlığı: (T, 100) anomali olasılığı (+ isteğe bağlı tür)
   → Maskeli sütunlar atılır
 ```
 
