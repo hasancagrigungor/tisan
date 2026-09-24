@@ -39,8 +39,8 @@ MIN_T = 20                 # bundan kısa veri üretilmez
 CLEAN_RATIO = 0.25         # örneklerin bu kadarında hiç anomali yok
 DOMAIN_SCENARIO_RATIO = 0.7  # anomalilerin bu kadarı alana özgü, kalanı genel
 MISSING_DATA_RATIO = 0.12  # anomalili örneklerde veri boşluğu olasılığı
-PERSISTENT_RATIO = 0.35    # genel anomalilerde "sona kadar sürme" olasılığı
-PERSISTENCE_SCALE = 0.7    # alan senaryolarındaki kalıcılık olasılıklarının genel çarpanı
+PERSISTENT_RATIO = 0.10    # genel anomalilerde "sona kadar sürme" olasılığı (gerçek olaylarda ~%0; kalıcı senaryo seyrek)
+PERSISTENCE_SCALE = 0.4    # alan senaryolarındaki kalıcılık olasılıklarının genel çarpanı
 
 TYPES = ["normal", "spike", "level_shift", "flatline", "drift", "noise_burst",
          "pattern_change", "correlation_break", "missing_data"]
@@ -196,6 +196,69 @@ class Ctx:
 # =============================================================================
 # Genel (alandan bağımsız) anomaliler
 # =============================================================================
+# -----------------------------------------------------------------------------
+# Gerçek anomali bankası: eğitim rolündeki etiketli gerçek olaylardan normalize şablonlar
+# (anomali_istatistik.py üretir). Şablon = [önce 2L | olay L | sonra ≤L] × etkilenen sütunlar, MAD birimi.
+# Hedef seriye ölçeklenip eklenir; hangi seride olduğu değil, bağlamdan sapması öğrenilir.
+# -----------------------------------------------------------------------------
+import os as _os
+BANK_PATH = _os.environ.get("ANOMALI_BANKASI", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "havuz", "anomali_bankasi.npz"))
+BANK_RATIO = 0.3           # genel enjeksiyonların bu kadarı bankadan (banka yoksa 0)
+_BANK = None
+
+
+def _bank():
+    global _BANK
+    if _BANK is None:
+        if _os.path.exists(BANK_PATH):
+            d = np.load(BANK_PATH, allow_pickle=True)
+            _BANK = [dict(z=z, pre=int(p), L=int(L)) for z, p, L in zip(d["z"], d["pre"], d["L"])]
+        else:
+            _BANK = []
+    return _BANK
+
+
+def bank_anomaly(ctx, min_effect=0.3):
+    """Bankadan bir gerçek olay şablonu alır, zaman ölçeğini rastgele eğer (×0.5–2), hedef sütun(lar)ın
+    MAD'ına ölçekler ve olay + sonrası bölümünü ekler. Etiket: olay satırları, etkilenen hedef sütunlar."""
+    bank = _bank()
+    if not bank:
+        return False
+    rng, X, T, k = ctx.rng, ctx.X, ctx.T, ctx.k
+    tpl = bank[int(rng.integers(len(bank)))]
+    z = tpl["z"][tpl["pre"]:]                                   # olay + sonrası (önce bölümü ≈ 0 sapma)
+    L0 = tpl["L"]
+    scale_t = float(np.exp(rng.uniform(np.log(0.5), np.log(2.0))))
+    n_new = max(2, int(round(len(z) * scale_t)))
+    L = max(1, int(round(L0 * scale_t)))
+    if n_new >= T - T // 10 - 1:
+        return False
+    idx = np.linspace(0, len(z) - 1, n_new)
+    zr = np.column_stack([np.interp(idx, np.arange(len(z)), z[:, j]) for j in range(z.shape[1])])
+    s = int(rng.integers(T // 10, T - n_new))
+    e = s + L
+    m = min(k, zr.shape[1])
+    cols = rng.choice(k, m, replace=False)
+    tcols = rng.choice(zr.shape[1], m, replace=False)
+    if ctx.labels[s:e, cols].any():
+        return False
+    gain = float(np.exp(rng.normal(0, 0.3))) * ctx.f
+    labeled = []
+    for c, j in zip(cols, tcols):
+        sd = ctx.sd(c)
+        before = X[s:s + n_new, c].copy()
+        X[s:s + n_new, c] += zr[:, j] * sd * gain
+        eff = np.mean(np.abs(X[s:e, c] - before[:L])) / max(sd, 1e-9)
+        if eff < min_effect:
+            X[s:s + n_new, c] = before
+        else:
+            labeled.append(int(c))
+    if not labeled:
+        return False
+    ctx.mark(s, e, labeled, "pattern_change" if L > 3 else "spike")   # tür bilinmiyor; kaba atama
+    return True
+
+
 def _partner(X, c, min_corr=0.5):
     """c ile en güçlü doğrusal ilişkili sütun; |korelasyon| < min_corr ise None."""
     if X.shape[1] < 2:
@@ -217,6 +280,8 @@ def generic_anomaly(ctx, kind=None, min_effect=0.3):
     """Alandan bağımsız anomali enjeksiyonu. Uygunluk (önce) ve etki (sonra) kontrolü yapar;
     geçersizse veriyi geri alır, etiket vermez ve False döner. Etiketli bölgeyle üst üste binmez."""
     rng, X, T, k = ctx.rng, ctx.X, ctx.T, ctx.k
+    if kind is None and _bank() and rng.random() < BANK_RATIO:
+        return bank_anomaly(ctx, min_effect)
     kind = kind or str(rng.choice(GENERIC_KINDS))
     if kind == "correlation_break":
         cands = [c for c in range(k) if _partner(X, c) is not None]
@@ -225,7 +290,7 @@ def generic_anomaly(ctx, kind=None, min_effect=0.3):
     c = int(rng.choice(cands)) if kind == "correlation_break" else int(rng.integers(k))
     x = X[:, c]
     sd = ctx.sd(c)
-    strength = rng.uniform(3, 6) * ctx.f * 1.6
+    strength = float(np.exp(rng.normal(np.log(4.0), 0.8))) * ctx.f * 1.6   # log-normal: p50 ≈ 4·f, ağır kuyruk (gerçek: 2.4 / 44 MAD)
     sign = rng.choice([-1, 1])
     if kind == "spike":
         s = int(rng.integers(T // 10, T - 1))
@@ -236,10 +301,31 @@ def generic_anomaly(ctx, kind=None, min_effect=0.3):
     seg = slice(s, e)
     if ctx.labels[s:e, c].any():                       # üst üste binme: önceki etiket bozulmasın
         return False
+    variant = rng.random()      # gerçek arızalara benzeyen ince alt varyantlar (~%35)
+    # 3) çok sütunlu olay: gerçek anomaliler sütunların ~yarısını etkiliyor → %40 olasılıkla ilişkili bir sütun grubuna aynı bozulma
+    if k > 1 and kind != "correlation_break" and rng.random() < 0.4:
+        n_extra = int(rng.integers(1, max(2, k // 2) + 1))
+        corr = np.array([abs(np.corrcoef(X[:, c], X[:, j])[0, 1]) if j != c and X[:, j].std() > 1e-9 else -1 for j in range(k)])
+        corr[~np.isfinite(corr)] = -1
+        group = [c] + [int(j) for j in np.argsort(-corr)[:n_extra] if corr[j] > 0 and not ctx.labels[s:e, j].any()]
+        if len(group) > 1:
+            ok_any = False
+            for j in group[1:]:
+                ok_any |= _inject_column(ctx, kind, j, s, e, sign, strength, rng.random(), min_effect)
+            # birincil sütun aşağıda işlenir
+    return _inject_column(ctx, kind, c, s, e, sign, strength, variant, min_effect)
+
+
+def _inject_column(ctx, kind, c, s, e, sign, strength, variant, min_effect=0.3):
+    """Tek sütuna enjeksiyon gövdesi; etki kontrolüyle etiketler, geçersizse geri alır."""
+    rng, X, T, k = ctx.rng, ctx.X, ctx.T, ctx.k
+    x = X[:, c]
+    sd = ctx.sd(c)
+    L = e - s
+    seg = slice(s, e)
     if kind in ("flatline", "pattern_change") and robust_std(x[seg]) < 1e-6:   # zaten sabit bölge
         return False
     before = x[seg].copy()
-    variant = rng.random()      # gerçek arızalara benzeyen ince alt varyantlar (~%35)
     if kind == "spike":
         x[seg] += sign * strength * sd
     elif kind == "level_shift":

@@ -148,6 +148,25 @@ finans · imalat · uzay (uydu telemetrisi) · hasta takibi · EKG · glikoz (CG
 
 Kaynak sinyaller (trend + rastgele dalga biçimli mevsimsellik + gürültü) rastgele bir DAG üzerinde gecikmeli ARX dinamiğiyle bağlanır; sütunlar bu kaynakların karışımıdır. Anomali **endojen** (kaynağa, karışımdan önce → bağımlı sütunlara fiziksel olarak yayılır; etiket, etkisi ölçülebilen sütunlara yazılır) ya da eksojen (gözleme) enjekte edilir. Amaç: anomalinin biçimi ile etiketi arasındaki bağı koparmak; model biçimi değil bağlamla uyuşmazlığı öğrensin. TimeRCD'nin ablation'ında gerçek arka plan + enjeksiyon (VUS-PR 0.10) bağlam-bağımlı sentetik korpusa (0.48) belirgin kaybetti; bu yüzden denetimli aşamada sentetik pay 0.6, `coupled` alanı sentetiğin %40'ı. Gerçek veri ön eğitimde (maskeli yeniden inşa) ve doğrulamada kalır.
 
+### Gerçek anomali istatistikleriyle hizalama (v6)
+
+`anomali_istatistik.py`, eğitim rolündeki etiketli gerçek olaylardan (ESA, CATS, HAI 20.07/21.03, BATADAL train) süre, etkilenen sütun oranı,
+genlik (MAD), başlangıç dikliği, kalıcılık, dönüş ve varyans oranını çıkarıp üreticiyle karşılaştırır. Son ölçüm (kaynak dengeli, 358 gerçek olay):
+
+| Ölçü | Gerçek | Üretici |
+|---|---|---|
+| Süre p50 (satır) | 301 | 99 |
+| Genlik p50 / p90 (MAD) | 2.4 / 44 | 2.4 / 41 |
+| Başlangıç (0 = ani) | 0.01 | 0.0 |
+| Kalıcı olay | %0 | %4 |
+| Sakinleşme (varyans çöküşü) | %16 | %20 |
+| Etkilenen sütun oranı | 0.47* | 0.21 |
+
+*satır etiketli kaynaklarda şişkin. Buna göre: genlik log-normal ağır kuyruk, kalıcılık 0.35 → 0.10, %40 olasılıkla ilişkili sütun grubuna
+aynı bozulma, varyans çöküşü varyantı. Ayrıca **gerçek anomali bankası** (`data/havuz/anomali_bankasi.npz`, 402 şablon): gerçek olaylar
+normalize şablon olarak saklanır, zaman ölçeği eğilip hedef serinin MAD'ına ölçeklenerek eklenir (genel enjeksiyonların %30'u).
+Yalnızca eğitim rolündeki kaynaklardan; doğrulama/benchmark asla.
+
 ### Her alanda
 
 - **Gerçekçi fizik:** Alana özgü ölçüm aralıkları (EKG 4 ms, borsa 1 gün), birimler, sınırlar (SpO2 ≤ 100, CPU 0–100), sensör hassasiyeti.
