@@ -339,7 +339,12 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - [x] Mimari v4: RoPE + gerçek zaman konumu, çok ölçekli girdi, maskeli yeniden inşa ön eğitimi
 - [x] v4 eğitimi (34M) başlatıldı; ön eğitim kaybı 1.2 → 0.2
 - [x] v5: bağlam 4096, `coupled` sentetik alanı, sentetik payı 0.6, VUS-PR (yaklaşık), Matrix Profile taban çizgisi
-- [ ] v5 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] Tam inceleme ve düzeltmeler (v6 öncesi): satır etiketli gerçek anomaliler kayba giriyor (BATADAL/LBNL'de %89–100 kayıptı),
+      `coupled` sahte etiket (%14 → 0), ön eğitimde maskeli patch sızıntısı, görülmemiş kaynaklarla model seçimi (BATADAL, ASD,
+      MetroPT, Pump eğitime/bankaya hiç girmez), kaynak-ortalamalı seçim, kalibrasyondan karar eşiği, `predict()` tekrarlı zaman
+      damgası, banka tür etiketi −1, UCR EKG serileri ayrı raporlanır, otomatik referans varsayılan kapalı, satır skoru `max`
+      (eğitimle aynı), bucketing ile dolgu israfı azaltıldı
+- [ ] v6 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)

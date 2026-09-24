@@ -12,8 +12,9 @@ class AnomaliConfig(PretrainedConfig):
                  patch=16, max_t=2048, max_ch=100, min_t=20,
                  extra_channels=("diff", "ms8", "ms64"), type_names=tuple(TYPES),
                  pos_encoding="rope", recon_head=True, use_types=False,
-                 temperature=1.0, row_agg="topk", row_topk=3,
-                 row_temperature=1.0, row_bias=0.0, auto_reference=True, reference_threshold=0.5, **kwargs):
+                 temperature=1.0, row_agg="max", row_topk=3,
+                 row_temperature=1.0, row_bias=0.0, auto_reference=False, reference_threshold=0.5,
+                 row_threshold=0.5, **kwargs):
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
@@ -29,15 +30,18 @@ class AnomaliConfig(PretrainedConfig):
         self.use_types = use_types                    # anomali türü başlığı (isteğe bağlı yardımcı görev; varsayılan kapalı)
         self.type_names = list(type_names)
         self.temperature = temperature                # kalibrasyon (temperature scaling)
-        self.row_agg = row_agg                        # hücre → satır skoru: "max" | "topk" | "noisy_or"
+        self.row_agg = row_agg                        # hücre → satır skoru: "max" (eğitimdeki satır kaybıyla aynı) | "topk" | "noisy_or"
         self.row_topk = row_topk
         # GPT-6 Astra: hücre ve satır kalibrasyonu ayrı; eski checkpoint için özdeş dönüşüm.
         self.row_temperature = row_temperature
         self.row_bias = row_bias
         # Kalıcı anomali: kayan pencerede normalizasyon referansı, son "normal" görünen pencereden alınır
         # ve anomali sürerken dondurulur (olay sürekliliği). Kullanıcı normal_reference verirse o kullanılır.
+        # Varsayılan kapalı: eğitimde referanslı normalizasyon nadir ve kısa (≤256 satır); kullanımda her pencereye
+        # uygulamak dağılım kayması yaratıyor, ham skor doyduğunda referans ilk pencerede donuyor.
         self.auto_reference = auto_reference
         self.reference_threshold = reference_threshold
+        self.row_threshold = row_threshold            # kalibre satır skoru için karar eşiği (kalibrasyon setinde en iyi F1)
         super().__init__(**kwargs)
 
     @property

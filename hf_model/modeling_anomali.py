@@ -242,7 +242,10 @@ class AnomaliModel(PreTrainedModel):
         B, T, C = values.shape
         p = cfg.patch
         P = T // p
-        x = self._features(values, time_mask)                              # (B,T,C,F)
+        feat_in = values
+        if mask_patches is not None:                                        # maskeli satırlar özelliklere sızmasın (diff/msN komşu patch'lere taşır)
+            feat_in = values.masked_fill(mask_patches.repeat_interleave(p, dim=1), 0.0)
+        x = self._features(feat_in, time_mask)                             # (B,T,C,F)
         x = x.reshape(B, P, p, C, self.n_feat).permute(0, 1, 3, 2, 4).reshape(B, P, C, p * self.n_feat)
         h = self.embed(x)
         if mask_patches is not None:                                        # maskeli yeniden inşa: girdi yerine mask token
@@ -386,8 +389,7 @@ class AnomaliModel(PreTrainedModel):
         r = self.detect(matrix, sensitivity=sensitivity, batch_size=batch_size, normal_reference=normal_reference)
         out = np.zeros(len(r.row_scores), dtype=np.int8)
         out[r.anomaly_rows] = 1
-        inv = np.empty_like(r.order); inv[r.order] = np.arange(len(r.order))     # kullanıcının satır sırasına geri dön
-        return out[inv] if len(inv) == len(out) else out
+        return out[r.row_index]                                              # girdiyle aynı uzunluk ve sıra
 
     def detect(self, matrix, sensitivity="medium", batch_size=8, normal_reference=None):
         """Kullanıcı arayüzü. matrix: (T, 1+k); ilk sütun zaman damgası."""
@@ -399,8 +401,10 @@ class AnomaliModel(PreTrainedModel):
         X = M[:, 1:].astype(np.float64)
         order = np.argsort(t, kind="stable")
         t, X = t[order], X[order]
-        # tekrarlı zaman damgaları: ortalama
+        # tekrarlı zaman damgaları: ortalama; row_index: kullanıcının i. satırı → sonuç satırı
         uniq, inv = np.unique(t, return_inverse=True)
+        row_index = np.empty(len(order), dtype=np.int64)
+        row_index[order] = inv
         if len(uniq) < len(t):
             Xa = np.zeros((len(uniq), X.shape[1]))
             cnt = np.zeros(len(uniq))
@@ -408,7 +412,8 @@ class AnomaliModel(PreTrainedModel):
             np.add.at(cnt, inv, 1)
             X, t = Xa / cnt[:, None], uniq
         T, k = X.shape
-        thr = {"low": 0.9, "medium": 0.7, "high": 0.5}[sensitivity]
+        base = float(getattr(cfg, "row_threshold", 0.5))
+        thr = {"low": base + (1 - base) * 0.5, "medium": base, "high": base * 0.6}[sensitivity]
         if T < cfg.min_t:
             # istatistiksel yedek: robust z-skoru
             z = np.abs(robust_normalize(fill_nan(X)))
@@ -420,16 +425,17 @@ class AnomaliModel(PreTrainedModel):
             note = None
         if not getattr(cfg, "use_types", False):
             types = np.zeros_like(types)                                        # tür başlığı kapalı: tür bilgisi yok
-        return AnomaliResult(t, X, order, prob, types, thr, cfg.type_names, note,
+        return AnomaliResult(t, X, row_index, prob, types, thr, cfg.type_names, note,
                              row_agg=cfg.row_agg, row_topk=cfg.row_topk,
                              row_temperature=cfg.row_temperature if T >= cfg.min_t else 1.0,
                              row_bias=cfg.row_bias if T >= cfg.min_t else 0.0)
 
 
 class AnomaliResult:
-    def __init__(self, t, X, order, cell_scores, cell_types, threshold, type_names, note=None,
-                 row_agg="topk", row_topk=3, row_temperature=1.0, row_bias=0.0):
-        self.timestamps, self.values, self.order = t, X, order
+    def __init__(self, t, X, row_index, cell_scores, cell_types, threshold, type_names, note=None,
+                 row_agg="max", row_topk=3, row_temperature=1.0, row_bias=0.0):
+        self.timestamps, self.values = t, X
+        self.row_index = row_index            # kullanıcının girdi satırı → sonuç satırı (sıralama + tekrar birleştirme)
         self.cell_scores, self.cell_types = cell_scores, cell_types
         self.threshold, self.type_names, self.note = threshold, type_names, note
         self.row_scores = calibrate_rows(aggregate_rows(cell_scores, row_agg, row_topk), row_temperature, row_bias)

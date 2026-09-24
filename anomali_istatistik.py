@@ -28,8 +28,8 @@ TRAIN_LABELED = {  # eğitim rolündeki etiketli kaynaklar (doğrulama/benchmark
     "hai": lambda sid: "/test" in sid and ("hai-20.07" in sid or "hai-21.03" in sid),
     "cats": lambda sid: sid.endswith("/train"),
     "esa": lambda sid: sid.endswith("/train"),
-    "batadal": lambda sid: "training" in sid,
 }
+# BATADAL ve ASD tamamen doğrulamaya ayrıldı (zero-shot model seçimi); bankaya girmez.
 # Dışlananlar: loghub/BGL (tek satırlık log alarmı, sayaç MAD≈0 → genlik anlamsız), Bosch/kantine/LBNL
 # (etiket dosya/bölüm boyu blok; "olay" değil rejim). Bunlar eğitimde etiket olarak kalır, istatistik ve bankaya girmez.
 MAX_L = 4096

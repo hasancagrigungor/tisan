@@ -255,7 +255,8 @@ def bank_anomaly(ctx, min_effect=0.3):
             labeled.append(int(c))
     if not labeled:
         return False
-    ctx.mark(s, e, labeled, "pattern_change" if L > 3 else "spike")   # tür bilinmiyor; kaba atama
+    ctx.mark(s, e, labeled, "pattern_change")
+    ctx.types[s:e, labeled] = -1                                        # gerçek olayın türü bilinmiyor: tür kaybına girmez
     return True
 
 
@@ -1803,8 +1804,9 @@ def gen_coupled(rng, t, k, extra):
             W[i, c] = rng.uniform(0.5, 1.5) * rng.choice([-1, 1])
     scale = 10 ** rng.uniform(-2, 3, k); offset = rng.normal(0, 2, k) * scale
     noise_sd = rng.uniform(0.02, 0.3, k)
+    noise = rng.normal(0, 1, (T, k)) * noise_sd                           # sabit: yeniden gözlemde yalnızca kaynak değişikliği görünsün
     def observe(Zc):
-        return (Zc @ W + rng.normal(0, 1, (T, k)) * noise_sd) * scale + offset
+        return (Zc @ W + noise) * scale + offset
     X = observe(Z)
     # torunlar: DAG üzerinde erişilebilirlik
     reach = {i: {i} for i in range(n_src)}
