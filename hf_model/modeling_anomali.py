@@ -149,7 +149,8 @@ class _Attention(nn.Module):
         q, k, v = self.qkv(x).reshape(N, L, 3, self.h, self.dk).permute(2, 0, 3, 1, 4)   # 3 × (N, h, L, dk)
         if pos is not None:
             q, k = _rope(q, k, pos)
-        mask = (~key_pad)[:, None, None, :]                                             # True = dikkat edilebilir
+        # dolgu yoksa maske verilmez: SDPA flash çekirdeğini kullanabilir (maske varken mem-efficient/matematik çekirdeğe düşer)
+        mask = None if not bool(key_pad.any()) else (~key_pad)[:, None, None, :]         # True = dikkat edilebilir
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0)
         return self.out(a.transpose(1, 2).reshape(N, L, d))
 
