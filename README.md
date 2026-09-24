@@ -123,7 +123,7 @@ Girdi (T, 1+k)
 
 - **Zaman dikkati:** Her sütun kendi geçmişine bakar: "Bu sütun için normal ne?"
 - **Sütun dikkati:** Aynı andaki sütunlar birbirine bakar: "Diğerleriyle tutarlı mı?" Sütunlara pozisyon bilgisi eklenmez; boş sütunlar maskelenir.
-- İki ekseni ayırmak hesaplamayı tek H100'e sığdırır: 2048 satır / 16 = 128 token × 100 sütun.
+- İki ekseni ayırmak hesaplamayı tek H100'e sığdırır: 4096 satır / 16 = 256 token × 100 sütun.
 - **Hedef boyut:** 10–50M parametre, bf16. İlk denemeler birkaç milyon parametreyle yapılır.
 - **Aşamalı yol:** Önce kanal bağımsız çalıştığı kanıtlanır, sonra sütunlar arası ilişkiler güçlendirilir.
 - **Konum kodlama (v4):** RoPE, konum = Δt oranlarının kümülatif toplamı (medyan adım = 1). Düzensiz örneklemede konum gerçek zamanı izler; kısa pencerede konum anlamı değişmez. Ablation: öğrenilmiş mutlak konum.
@@ -140,9 +140,13 @@ Girdi (T, 1+k)
 
 ## 5. Eğitim verisi
 
-`egitim_verisi_uretici.py`, tek dosyada 16 gerçek alanı ve bir soyut alanı kapsar:
+`egitim_verisi_uretici.py`, tek dosyada 16 gerçek alanı, bir soyut alanı ve bir **bağlam-bağımlı çok değişkenli** alanı (`coupled`, v5) kapsar:
 
 finans · imalat · uzay (uydu telemetrisi) · hasta takibi · EKG · glikoz (CGM) · biyoreaktör · enerji · bilişim · su şebekesi · çevre/iklim · perakende · otomotiv · telekom · tarım · kimyasal proses · soyut seriler
+
+### `coupled` alanı (v5, TimeRCD bulgusu)
+
+Kaynak sinyaller (trend + rastgele dalga biçimli mevsimsellik + gürültü) rastgele bir DAG üzerinde gecikmeli ARX dinamiğiyle bağlanır; sütunlar bu kaynakların karışımıdır. Anomali **endojen** (kaynağa, karışımdan önce → bağımlı sütunlara fiziksel olarak yayılır; etiket, etkisi ölçülebilen sütunlara yazılır) ya da eksojen (gözleme) enjekte edilir. Amaç: anomalinin biçimi ile etiketi arasındaki bağı koparmak; model biçimi değil bağlamla uyuşmazlığı öğrensin. TimeRCD'nin ablation'ında gerçek arka plan + enjeksiyon (VUS-PR 0.10) bağlam-bağımlı sentetik korpusa (0.48) belirgin kaybetti; bu yüzden denetimli aşamada sentetik pay 0.6, `coupled` alanı sentetiğin %40'ı. Gerçek veri ön eğitimde (maskeli yeniden inşa) ve doğrulamada kalır.
 
 ### Her alanda
 
@@ -159,7 +163,7 @@ finans · imalat · uzay (uydu telemetrisi) · hasta takibi · EKG · glikoz (CG
 | Veri boşluğu olan anomalili örnek | %12 |
 | Sona kadar süren anomali | ~%37 |
 | Sütun sayısı | 1–100, log-uniform (az sütun daha sık) |
-| Satır sayısı | 20–2048 (yarısı tam pencere) |
+| Satır sayısı | 20–4096 (yarısı tam pencere) |
 
 ### Kurallar
 
@@ -214,9 +218,9 @@ hücrelere yayılmaz; pozitif satırlarda kayıp satır skoru (sütunlar üzerin
 | Durum | Yöntem |
 |---|---|
 | < 20 satır | Uyarı veya istatistiksel yönteme (MAD) geçiş |
-| 20–2048 satır | Dolgu + maske; güven skoru düşer |
-| 2048 satır | Tek pencere |
-| Uzun veri | Kayan pencere (2048 / 1024 adım) + skorların birleştirilmesi |
+| 20–4096 satır | Dolgu + maske; güven skoru düşer |
+| 4096 satır | Tek pencere |
+| Uzun veri | Kayan pencere (4096 / 2048 adım) + skorların birleştirilmesi; referans normalizasyonu son "normal" pencereden, anomali sürerken dondurulur |
 | Çok uzun veri | Çok ölçekli işleme: orijinal, saatlik, günlük çözünürlük |
 
 ### Kalıcı anomaliler
@@ -314,7 +318,10 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
       (eğitimde %25, inference'ta dondurulabilir otomatik referans), model seçimi / kalibrasyon / test için ayrı kaynaklar,
       satır düzeyinde kalibrasyon
 - [x] Mimari v4: RoPE + gerçek zaman konumu, çok ölçekli girdi, maskeli yeniden inşa ön eğitimi
-- [ ] v4 eğitimi (34M); ablation: ön eğitim açık/kapalı, çok ölçekli açık/kapalı, RoPE/learned, sentetik payı, leave-one-domain-out
+- [x] v4 eğitimi (34M) başlatıldı; ön eğitim kaybı 1.2 → 0.2
+- [x] v5: bağlam 4096, `coupled` sentetik alanı, sentetik payı 0.6, VUS-PR (yaklaşık), Matrix Profile taban çizgisi
+- [ ] v5 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
 - [x] `detect()`: ön/son işleme, kayan pencere, sütun gruplama, olaylar (çok ölçek ve örüntü özeti v2)

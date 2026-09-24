@@ -34,7 +34,7 @@ except ImportError:  # scipy yoksa yavaş ama çalışan yedek yol
     _lfilter = None
 
 MAX_CH = 100               # sütunlar her zaman 100'e tamamlanır
-MAX_T = 2048               # modelin gördüğü pencere uzunluğu
+MAX_T = 4096              # modelin gördüğü pencere uzunluğu
 MIN_T = 20                 # bundan kısa veri üretilmez
 CLEAN_RATIO = 0.25         # örneklerin bu kadarında hiç anomali yok
 DOMAIN_SCENARIO_RATIO = 0.7  # anomalilerin bu kadarı alana özgü, kalanı genel
@@ -1639,6 +1639,142 @@ def gen_abstract(rng, t, k, extra):
     return X, ["abstract"] * k, np.zeros(k, dtype=int)
 
 
+# =============================================================================
+# 18. BAĞLAM-BAĞIMLI ÇOK DEĞİŞKENLİ SERİLER (TimeRCD tarzı)
+#   Kaynak sinyaller (trend + rastgele dalga biçimli mevsimsellik + gürültü) rastgele bir DAG üzerinde
+#   gecikmeli ARX dinamiğiyle birbirine bağlanır; gözlenen sütunlar bu kaynakların karışımıdır.
+#   Anomali ENDOJEN (kaynağa, karışımdan önce → bağımlı sütunlara yayılır, etiket de yayılır) ya da
+#   EKSOJEN (gözleme doğrudan) enjekte edilir. Amaç: aynı biçim bir bağlamda normal, başkasında anomali
+#   olabilsin; model biçimi değil bağlamla uyuşmazlığı öğrensin.
+# =============================================================================
+def _waveform(rng, phase):
+    kind = rng.choice(["sin", "square", "tri", "saw", "pulse", "wavelet"])
+    if kind == "sin":
+        return np.sin(phase)
+    if kind == "square":
+        return np.sign(np.sin(phase))
+    if kind == "tri":
+        return 2 * np.abs(2 * (phase / (2 * np.pi) % 1) - 1) - 1
+    if kind == "saw":
+        return 2 * (phase / (2 * np.pi) % 1) - 1
+    if kind == "pulse":
+        return (np.sin(phase) > rng.uniform(0.5, 0.95)).astype(float) * 2 - 1
+    return np.sin(phase) * np.exp(-((phase / (2 * np.pi) % 1) - 0.5) ** 2 / rng.uniform(0.01, 0.1))
+
+
+def _coupled_source(rng, T):
+    tt = np.arange(T, dtype=float)
+    x = np.zeros(T)
+    for _ in range(int(rng.integers(0, 3))):                          # 0–2 mevsimsel bileşen
+        period = float(rng.choice([rng.uniform(6, 40), rng.uniform(40, max(41, T / 3)), rng.uniform(max(41, T / 3), max(42, T / 1.5))]))
+        x += rng.uniform(0.3, 1.5) * _waveform(rng, 2 * np.pi * tt / period + rng.uniform(0, 6.3))
+    if rng.random() < 0.6:                                             # trend: doğrusal / parçalı / rastgele yürüyüş
+        kind = rng.choice(["lin", "pw", "rw"])
+        if kind == "lin":
+            x += rng.uniform(-1.5, 1.5) * tt / T
+        elif kind == "pw":
+            x += np.cumsum(rng.normal(0, 1, T) * (rng.random(T) < 0.01)) * rng.uniform(0.2, 0.8)
+        else:
+            x += np.cumsum(rng.normal(0, rng.uniform(0.01, 0.08), T))
+    x += rng.normal(0, rng.uniform(0.02, 0.4), T)
+    if rng.random() < 0.2:                                             # rejim değişimi: normal ama tuhaf
+        a = int(rng.integers(T // 4, 3 * T // 4)); x[a:] += rng.normal(0, 1.5)
+    return x
+
+
+def gen_coupled(rng, t, k, extra):
+    T = len(t)
+    n_src = int(rng.integers(1, min(6, k) + 1))
+    S = np.column_stack([_coupled_source(rng, T) for _ in range(n_src)])
+    # DAG: kaynak j, i<j kaynaklarından gecikmeli ARX ile etkilenir
+    A = np.zeros((n_src, n_src)); D = np.zeros((n_src, n_src), dtype=int)
+    for j in range(1, n_src):
+        for i in range(j):
+            if rng.random() < 0.5:
+                A[i, j] = rng.uniform(-0.8, 0.8); D[i, j] = int(rng.integers(0, 20))
+    ar = rng.uniform(-0.3, 0.8, n_src)                                  # otoregresif katsayı |a| ≤ 0.8
+    def propagate(S0):
+        Z = S0.copy()
+        for j in range(n_src):
+            drive = Z[:, j].copy()
+            for i in range(j):
+                if A[i, j]:
+                    d = D[i, j]
+                    drive[d:] += A[i, j] * Z[:T - d, i]
+            y = np.zeros(T)
+            for n in range(T):                                          # y_n = a·y_{n-1} + drive_n
+                y[n] = ar[j] * (y[n - 1] if n else 0.0) + drive[n]
+            Z[:, j] = y
+        return Z
+    Z = propagate(S)
+    # gözlem: her sütun 1–2 kaynağın doğrusal karışımı + sensör gürültüsü + ölçek/ofset
+    W = np.zeros((n_src, k))
+    for c in range(k):
+        for i in rng.choice(n_src, size=min(n_src, int(rng.integers(1, 3))), replace=False):
+            W[i, c] = rng.uniform(0.5, 1.5) * rng.choice([-1, 1])
+    scale = 10 ** rng.uniform(-2, 3, k); offset = rng.normal(0, 2, k) * scale
+    noise_sd = rng.uniform(0.02, 0.3, k)
+    def observe(Zc):
+        return (Zc @ W + rng.normal(0, 1, (T, k)) * noise_sd) * scale + offset
+    X = observe(Z)
+    # torunlar: DAG üzerinde erişilebilirlik
+    reach = {i: {i} for i in range(n_src)}
+    for i in range(n_src):
+        stack = [i]
+        while stack:
+            u = stack.pop()
+            for v in range(u + 1, n_src):
+                if A[u, v] and v not in reach[i]:
+                    reach[i].add(v); stack.append(v)
+    extra.update(S=S, W=W, reach=reach, propagate=propagate, observe=observe, D=D, n_src=n_src)
+    return X, ["coupled"] * k, np.array([int(np.argmax(np.abs(W[:, c]))) for c in range(k)])
+
+
+def sc_endogenous(ctx):
+    """Kaynağa (karışımdan önce) enjeksiyon: bozulma bağımlı kaynaklara ve onlara bağlı sütunlara yayılır;
+    etiket yayılan sütunlara (gecikme payıyla) yazılır."""
+    ex = ctx.extra
+    if "S" not in ex:
+        return False
+    rng, T = ctx.rng, ctx.T
+    i = int(rng.integers(ex["n_src"]))
+    S = ex["S"].copy()
+    kind = str(rng.choice(["spike", "level_shift", "drift", "noise_burst", "flatline", "pattern_change"]))
+    s, e = ctx.segment(5, 0.3, PERSISTENT_RATIO if kind in PERSISTENT_OK else 0.0)
+    if kind == "spike":
+        s = int(rng.integers(T // 10, T - 1)); e = min(T, s + int(rng.integers(1, 4)))
+    L = e - s; sd = max(robust_std(S[:, i]), 1e-6); g = rng.uniform(2, 5) * ctx.f
+    seg = slice(s, e)
+    if kind == "spike":
+        S[seg, i] += rng.choice([-1, 1]) * g * 1.5 * sd
+    elif kind == "level_shift":
+        S[seg, i] += rng.choice([-1, 1]) * g * 0.6 * sd
+    elif kind == "drift":
+        S[seg, i] += rng.choice([-1, 1]) * g * sd * np.linspace(0, 1, L)
+    elif kind == "noise_burst":
+        S[seg, i] += rng.normal(0, g * 0.5 * sd, L)
+    elif kind == "flatline":
+        S[seg, i] = S[s, i]
+    else:
+        S[seg, i] = np.median(S[seg, i]) + 1.5 * sd * np.sin(2 * np.pi * np.arange(L) / rng.uniform(3, max(4.0, L / 2)))
+    Xn = ex["observe"](ex["propagate"](S))
+    affected = ex["reach"][i]
+    cols = [c for c in range(ctx.k) if any(ex["W"][j, c] for j in affected)]
+    if not cols:
+        return False
+    delay = int(max([ex["D"][i, j] for j in affected] + [0]))
+    e2 = min(T, e + delay + 1)
+    # sütun bazında etki: değişim o sütunun oynaklığına göre anlamlıysa etiketlenir (zayıf yayılım etiketlenmez)
+    eff = np.array([np.mean(np.abs(Xn[s:e2, c] - ctx.X[s:e2, c])) / max(robust_std(ctx.X[:, c]), 1e-9) for c in cols])
+    lab_cols = [c for c, v in zip(cols, eff) if v >= 0.3]
+    if not lab_cols:
+        return False
+    ctx.X[:, cols] = Xn[:, cols]
+    ex["S"] = S
+    ctx.mark(s, e2, lab_cols, kind if kind in TYPE_ID else "pattern_change")
+    return True
+
+
 def gen_real_template(rng, t, k, extra):
     """ŞABLON: kendi gerçek verinizden örnek çekmek için.
     Bir kaynaktan (fabrika, borsa, sunucu ...) len(t) satır ve k sütun alın,
@@ -1694,9 +1830,12 @@ DOMAINS = {
     "chemical":      dict(gen=gen_chemical, steps=[1, 10, 60],
                           scenarios=[sc_thermal_runaway, sc_valve_stiction, sc_feed_pump_trip]),
     "abstract":      dict(gen=gen_abstract, steps=[1, 60, 300, 900, 3600, 86400], scenarios=[]),
+    "coupled":       dict(gen=gen_coupled, steps=[1, 10, 60, 300, 900, 3600, 86400],
+                          scenarios=[sc_endogenous, sc_endogenous, sc_endogenous]),   # endojen ağırlıklı; genel (eksojen) enjeksiyon make_sample'da
 }
 DOMAIN_NAMES = list(DOMAINS)
-DOMAIN_WEIGHTS = np.ones(len(DOMAIN_NAMES)) / len(DOMAIN_NAMES)   # sektör dengesi: eşit ağırlık
+DOMAIN_WEIGHTS = np.ones(len(DOMAIN_NAMES)); DOMAIN_WEIGHTS[DOMAIN_NAMES.index("coupled")] = 0.4 * (len(DOMAIN_NAMES) - 1) / 0.6
+DOMAIN_WEIGHTS = DOMAIN_WEIGHTS / DOMAIN_WEIGHTS.sum()             # coupled %40, kalan 17 alan eşit paylaşır
 
 
 # =============================================================================
