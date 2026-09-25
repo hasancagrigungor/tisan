@@ -58,7 +58,7 @@ s["raw"], s["labels"], s["meta"]
 | VED (araç CAN) | 500 | ≤7 | ~1 sn | yok | Apache-2.0 | – |
 | ABD hisse/ETF (CC0) | 333 | 5 | 1 gün (iş günü) | yok | CC0 | – |
 | Binance 1 dk | 4 | 6 | 1 dk | yok | belirsiz | – |
-| ESA-ADB Mission1 (14 kanal) | 28 (train/val) | 1 | 10 dk ort. | satır (labels.csv) | CC-BY-4.0 | – |
+| ESA-ADB tam (Mission1 / Mission2) | 26 (train/val) / 13 | 1–8 (gruplu) | 10 dk ort. | hücre (Anomaly = 1, Rare Event = −1) | CC-BY-4.0 | – |
 | Bosch CNC | 44 | 3 | 5 ms (200 Hz) | satır (kötü proses) | CC-BY-4.0 | – |
 | IMS rulman | 93 | 4–24 | 10 dk (özellik) / 20 kHz (ham) | satır (son %8) / yok | NASA | – |
 | LBNL HVAC | 6 | ~40–90 | 1 dk | satır (arıza) | CC-BY-4.0 | – |
@@ -68,10 +68,19 @@ s["raw"], s["labels"], s["meta"]
 | FEMTO rulman | ~156 | 2–6 | 10 sn (özellik) / 25.6 kHz (ham) | satır (son %8) / yok | akademik | – |
 | UCI hava kalitesi / ev enerji / doluluk | 5 | 5–28 | 1 dk – 1 saat | yok | CC-BY-4.0 | – |
 | kantine robot kolu (LeRobot) | 11 | 12 | 33 ms | satır (anomali bölümleri) / yok | Apache-2.0 | – |
+| LEAD1.0 (ASHRAE GEP III, 200 bina) | 160 / 40 (lead_val) | 1 | 1 saat | satır (elle) | MIT | – |
+| Petrobras 3W 2.0 (yalnız gerçek WELL-*) | 984 / 135 (w3_val) | 1–19 | 1 sn | satır (istenmeyen olay + geçiş) | CC-BY-4.0 | – |
+| REFIT ev elektrik (Kaggle aynası, 6 ev) | 60 | 10 | 1 dk | yok | CC-BY-4.0 | – |
+| CARE to Compare (rüzgâr SCADA) | 37 (A/B) / 58 (C → care_c) | 46–100 | 10 dk | satır (olay penceresi) | CC-BY-SA-4.0 | – |
+| Microsoft cloud monitoring | 60 | 1 | değişken | satır | MIT | – |
+| Tsinghua CTF (150 makine örneklendi) | 120 / 30 (ctf_val) | 49 | 30 sn | satır (son 8 gün; ilk 5 gün yok) | belirsiz | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,
-wind `labeled`, Pump, MetroPT-3, CATS `val`, ESA `val` ve BATADAL test doğrulamada. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
+wind `labeled`, CATS `val`, ESA-ADB `val` doğrulamada. Tamamen görülmemiş kaynaklar (eğitime ve anomali bankasına hiç girmez):
+BATADAL, ASD, MetroPT-3, Pump, `lead_val`, `w3_val`, `esa2` (ESA Mission2), `care_c` (CARE farm C), Microsoft (`msft`), `ctf_val`. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).
+
+**Havuz (Eylül 2026):** 17.467 seri, 223M satır, ~2,0 milyar hücre.

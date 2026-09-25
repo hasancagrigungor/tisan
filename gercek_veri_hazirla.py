@@ -54,7 +54,13 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "lbnl": "CC-BY-4.0", "ims_bearing": "NASA kamu malı", "loghub": "belirsiz (Loghub)", "binance": "belirsiz (Kaggle)",
           "ucr": "akademik kullanım (UCR)", "psm": "eBay (RANSynCoders, MIT)", "damadics": "akademik (DAMADICS, Lublin)",
           "asd": "InterFusion (MIT)", "uci": "CC-BY-4.0 (UCI)", "femto": "PHM 2012 / FEMTO-ST (akademik)",
-          "kantine": "Apache-2.0 (LeRobot, kantine)"}
+          "kantine": "Apache-2.0 (LeRobot, kantine)",
+          "lead": "CC-BY-4.0 (LEAD1.0)", "lead_val": "CC-BY-4.0 (LEAD1.0)",
+          "w3": "CC-BY-4.0 (Petrobras 3W veri) / Apache-2.0 (kod)", "w3_val": "CC-BY-4.0 (Petrobras 3W veri) / Apache-2.0 (kod)",
+          "esa_full": "CC-BY-4.0 (ESA-ADB)", "esa2": "CC-BY-4.0 (ESA-ADB)",
+          "care": "CC-BY-SA-4.0 (CARE to Compare)", "care_c": "CC-BY-SA-4.0 (CARE to Compare)",
+          "refit": "CC-BY-4.0 (REFIT, Strathclyde)", "msft": "MIT (Microsoft)",
+          "ctf": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)", "ctf_val": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)"}
 
 
 def _unix(s):
@@ -733,6 +739,168 @@ def load_kantine():
                     names, "row", True, note=("ilk 5 bölüm normal, sonrakiler anomali senaryosu" if labeled else "etiketsiz (tüm bölümler senaryo)"))
 
 
+def _holdout(ids, frac, seed):
+    """Deterministik görülmemiş doğrulama seçimi: kimliklerin frac'i."""
+    ids = sorted(ids)
+    rng = np.random.default_rng(seed)
+    return set(rng.choice(ids, max(1, int(round(len(ids) * frac))), replace=False).tolist())
+
+
+def load_lead(val_frac=0.2):
+    """LEAD1.0 (ASHRAE GEP III'ün etiketli sürümü, GitHub'daki 200 binalık kısım): saatlik elektrik sayacı, 2016.
+    Satır bazında elle etiketlenmiş anomali. Binaların %20'si tamamen görülmemiş doğrulama (lead_val)."""
+    d = pd.read_csv(RAW / "lead" / "lead1.0-small.csv")
+    hold = _holdout(d.building_id.unique().tolist(), val_frac, seed=11)
+    for b, g in d.groupby("building_id"):
+        g = g.sort_values("timestamp")
+        if g.meter_reading.notna().sum() < 500:
+            continue
+        src = "lead_val" if b in hold else "lead"
+        yield _seri(f"{src}/building{int(b)}", src, "building", _unix(g["timestamp"]), g[["meter_reading"]].to_numpy(dtype=float),
+                    g["anomaly"].to_numpy().astype(np.int8), ["meter_reading"], "row", False,
+                    note="saatlik bina elektrik sayacı; elle etiketlenmiş anomali")
+
+
+def load_w3(val_frac=0.2):
+    """Petrobras 3W 2.0: açık deniz petrol kuyuları, 1 sn. Yalnızca GERÇEK örnekler (WELL-*); simüle ve elle çizilmiş atlanır.
+    Etiket: class 0 = normal, 1–9 = istenmeyen olay, 101–109 = olaya geçiş (ikisi de 1), NaN = etiketsiz (-1).
+    Kuyuların %20'si tamamen görülmemiş doğrulama (w3_val)."""
+    base = RAW / "w3"
+    files = sorted(base.glob("*/WELL-*.parquet"))
+    wells = {f.name.split("_")[0] for f in files}
+    hold = _holdout(list(wells), val_frac, seed=7)
+    for f in files:
+        well = f.name.split("_")[0]
+        d = pd.read_parquet(f)
+        if "timestamp" in d.columns:
+            d = d.set_index("timestamp")
+        cls = d["class"].astype("float")
+        names = [c for c in d.columns if c not in ("class", "state") and d[c].notna().mean() > 0.5 and d[c].std(skipna=True) > 0]
+        if not names or len(d) < 200:
+            continue
+        lab = np.where(cls.isna(), -1, (cls > 0).astype(int)).astype(np.int8)
+        src = "w3_val" if well in hold else "w3"
+        yield _seri(f"{src}/{f.parent.name}/{f.stem}", src, "oil_gas", d.index.astype("int64").to_numpy() / 1e9,
+                    d[names].to_numpy(dtype=float), lab, names, "row", False,
+                    note=f"3W gerçek örnek; olay sınıfı {f.parent.name}; kuyu {well}")
+
+
+def load_refit(resample="1min", chunk_days=60):
+    """REFIT (Strathclyde, Kaggle yansısı): 6 ev, toplam + 9 cihaz güç tüketimi (W), ~8 sn → 1 dk ortalama.
+    Buzdolabı/dondurucu açma-kapama döngüleri, çamaşır/bulaşık makinesi toplu programları: etiketsiz NORMAL davranış.
+    Uzun kayıtlar 60 günlük parçalara bölünür."""
+    base = RAW / "refit"
+    for f in sorted(base.glob("House_*.csv"), key=lambda p: int(p.stem.split("_")[1])):
+        d = pd.read_csv(f, usecols=lambda c: c != "Time")
+        d.index = pd.to_datetime(d.pop("Unix"), unit="s")
+        d = d.resample(resample).mean()
+        names = [c for c in d.columns if d[c].notna().mean() > 0.5 and d[c].std() > 0]
+        d = d[names]
+        step = pd.Timedelta(days=chunk_days)
+        for i, a in enumerate(pd.date_range(d.index.min(), d.index.max(), freq=step)):
+            g = d[a:a + step]
+            if g.notna().all(1).sum() < 1000:
+                continue
+            yield _seri(f"refit/{f.stem.lower()}/p{i:02d}", "refit", "residential", g.index.astype("int64").to_numpy() / 1e9,
+                        g.to_numpy(dtype=float), -1, names, "row", False,
+                        note="etiketsiz; ev cihazı güç tüketimi, açma-kapama ve toplu program döngüleri")
+
+
+def _esa_mission(mission_dir, resample="10min"):
+    """ESA-ADB bir görev klasörü → kanal grupları üzerinde çok değişkenli seriler (10 dk ortalama).
+    Pozitif = Category 'Anomaly'; 'Rare Event' (planlı/nadir işlemler) = -1 (bilinmiyor; kayba ve ölçüme girmez).
+    Hedef olmayan (etiketlenmemiş) kanallar = -1. Etiket düzeyi hücre."""
+    import zipfile
+    md = Path(mission_dir)
+    ch = pd.read_csv(md / "channels.csv")
+    lab = pd.read_csv(md / "labels.csv")
+    cat = pd.read_csv(md / "anomaly_types.csv").set_index("ID")["Category"]
+    lab["kategori"] = lab.ID.map(cat)
+    lab["StartTime"] = pd.to_datetime(lab.StartTime).dt.tz_localize(None)
+    lab["EndTime"] = pd.to_datetime(lab.EndTime).dt.tz_localize(None)
+    for grp, g in ch.groupby("Group"):
+        if (g.Target == "YES").sum() == 0:
+            continue
+        cols, names, targets = [], [], []
+        for c, tgt in zip(g.Channel, g.Target):
+            zp = md / "channels" / f"{c}.zip"
+            if not zp.exists():
+                continue
+            with zipfile.ZipFile(zp) as z:
+                inner = [n for n in z.namelist() if not n.endswith("/")][0]
+                with z.open(inner) as fh:
+                    d = pd.read_pickle(fh)
+            cols.append(d.iloc[:, 0].resample(resample).mean().rename(c)); names.append(c); targets.append(tgt == "YES")
+        if not cols:
+            continue
+        D = pd.concat(cols, axis=1)
+        D = D[D.notna().any(axis=1)]
+        L = np.full(D.shape, -1, dtype=np.int8)
+        for j, (c, tgt) in enumerate(zip(names, targets)):
+            if not tgt:
+                continue
+            L[:, j] = 0
+            for _, r in lab[lab.Channel == c].iterrows():
+                rows = (D.index >= r.StartTime) & (D.index <= r.EndTime)
+                L[rows, j] = 1 if r.kategori == "Anomaly" else np.where(L[rows, j] == 1, 1, -1)
+        yield int(grp), D, L, names
+
+
+def load_esa_full(train_frac=0.7):
+    """ESA-ADB Mission 1 tam sürüm (eğitim; son %30 tanıdık doğrulama) + Mission 2 (tamamen görülmemiş: esa2).
+    Eski Kaggle alt kümesi ('esa') bununla değiştirilir."""
+    base = RAW / "esa_full"
+    for mdir, src, split in ((base / "m1" / "ESA-Mission1", "esa_full", True), (base / "m2" / "ESA-Mission2", "esa2", False)):
+        if not (mdir / "channels.csv").exists():
+            continue
+        for grp, D, L, names in _esa_mission(mdir):
+            t = D.index.astype("int64").to_numpy() / 1e9
+            X = D.to_numpy(dtype=float)
+            parts = (("train", slice(0, int(len(D) * train_frac))), ("val", slice(int(len(D) * train_frac), None))) if split else (("all", slice(None)),)
+            for name, sl in parts:
+                yield _seri(f"{src}/group{grp}/{name}", src, "space", t[sl], X[sl], L[sl], names, "cell", False,
+                            note="ESA-ADB; pozitif = Anomaly, Rare Event = -1; hedef olmayan kanal = -1")
+
+
+def load_care(max_cols=100):
+    """CARE to Compare (Zenodo, CC-BY-SA-4.0): 3 rüzgâr çiftliği, 95 türbin veri seti, 10 dk SCADA.
+    Etiket: anomali olayı penceresi (arızaya giden dönem, arıza kaydından) = 1; durum 0/2 (üretim/bekleme) = 0;
+    durum 1/3/4/5 (kısıtlı/servis/duruş/diğer) = -1. Yalnızca 10 dk ortalama sütunları (_avg), en fazla 100.
+    A ve B çiftlikleri eğitim ('care'); C çiftliği tamamen görülmemiş doğrulama ('care_c')."""
+    base = RAW / "care"
+    for farm, src in (("A", "care"), ("B", "care"), ("C", "care_c")):
+        fd = base / f"Wind Farm {farm}"
+        if not (fd / "event_info.csv").exists():
+            continue
+        ev = pd.read_csv(fd / "event_info.csv", sep=";").set_index("event_id")
+        for f in sorted((fd / "datasets").glob("*.csv"), key=lambda p: int(p.stem)):
+            eid = int(f.stem)
+            d = pd.read_csv(f, sep=";")
+            names = [c for c in d.columns if c.endswith("_avg") and d[c].notna().mean() > 0.5 and d[c].std() > 0]
+            if len(names) > max_cols:                                   # en oynak 100 ortalama sütun
+                names = d[names].std().div(d[names].abs().median() + 1e-9).sort_values(ascending=False).index[:max_cols].tolist()
+            st = d["status_type_id"].to_numpy()
+            lab = np.where(np.isin(st, [0, 2]), 0, -1).astype(np.int8)
+            if eid in ev.index and ev.loc[eid, "event_label"] == "anomaly":
+                a, b = int(ev.loc[eid, "event_start_id"]), int(ev.loc[eid, "event_end_id"])
+                lab[(d["id"].to_numpy() >= a) & (d["id"].to_numpy() <= b)] = 1
+            yield _seri(f"{src}/farm{farm}/event{eid}", src, "energy", _unix(d["time_stamp"]), d[names].to_numpy(dtype=float),
+                        lab, names, "row", False,
+                        note=f"CARE {farm} çiftliği, olay {eid} ({ev.loc[eid, 'event_label'] if eid in ev.index else '?'}); zaman damgası anonim")
+
+
+def load_msft():
+    """Microsoft Cloud Monitoring Dataset (MIT): gerçek bulut metrikleri (çökme oranı, RPS, gecikme, veri girişi...),
+    her dosya tek seri, satır bazında 0/1. Tamamı görülmemiş doğrulama."""
+    base = RAW / "msft" / "repo" / "data"
+    for f in sorted(base.glob("*/*.csv")):
+        d = pd.read_csv(f)
+        if len(d) < 100:
+            continue
+        yield _seri(f"msft/{f.parent.name}/{f.stem}", "msft", "it", _unix(d["TimeStamp"]), d[["Value"]].to_numpy(dtype=float),
+                    d["Label"].to_numpy().astype(np.int8), ["value"], "row", False, note=f"Microsoft bulut izleme: {f.parent.name}")
+
+
 # -----------------------------------------------------------------------------
 # LOTSA (Salesforce/lotsa_data): etiketsiz tahmin derlemi, "normal" arka plan için.
 # Alt küme başına en küçük Arrow dosyası indirilir; seri ve satır sayısı sınırlandırılır.
@@ -821,6 +989,42 @@ def load_lotsa(subset, path):
         yield _seri(f"lotsa/{subset}/{r['item_id']}", "lotsa", _lotsa_sector(subset), t, X, -1,
                     [f"dim_{j}" for j in range(k)], "row", synth, note=f"etiketsiz; freq={r['freq']}")
 
+def load_ctf(n_machines=150, val_frac=0.2):
+    """Tsinghua NetMan CTF: büyük bir internet şirketinin veri merkezi makineleri, 49 KPI, 30 sn, 18–30 Nisan (13 gün).
+    Dosya = makine_gün (2880 satır). İlk 5 gün (18–22) etiketsiz (-1); son 8 gün (23–30) label_result/<makine>.pkl ile
+    satır etiketli (23039 değer, gün 23 başından hizalı). Eksik günler atlanır (gerçek zaman damgası boşluğu korur).
+    Yıl belirtilmemiş: 2019 varsayıldı (yalnızca Δt kullanılıyor). Makinelerin tamamı ~1 milyar hücre olduğundan
+    deterministik n_machines makine alınır; bunların %20'si tamamen görülmemiş doğrulama (ctf_val)."""
+    import pickle
+    base = RAW / "ctf" / "CTF_data"
+    by_m = {}
+    for f in base.glob("*_*.txt"):
+        m, d = f.stem.split("_")
+        by_m.setdefault(int(m), []).append((int(d), f))
+    rng = np.random.default_rng(3)
+    ms = sorted(rng.choice(sorted(by_m), min(n_machines, len(by_m)), replace=False).tolist())
+    hold = _holdout(ms, val_frac, seed=5)
+    day0 = pd.Timestamp("2019-04-18").value / 1e9
+    for m in ms:
+        lab_test = pickle.load(open(RAW / "ctf" / "label_result" / f"{m}.pkl", "rb"), encoding="latin1").astype(np.int8)
+        ts, Xs, ls = [], [], []
+        for d, f in sorted(by_m[m]):
+            x = pd.read_csv(f, header=None).to_numpy(dtype=float)
+            i = np.arange(len(x))
+            ts.append(day0 + (d - 18) * 86400 + 30.0 * i)
+            if d >= 23:
+                j = (d - 23) * 2880 + i
+                ls.append(np.where(j < len(lab_test), lab_test[np.minimum(j, len(lab_test) - 1)], -1).astype(np.int8))
+            else:
+                ls.append(np.full(len(x), -1, np.int8))
+            Xs.append(x)
+        X = np.vstack(Xs)
+        src = "ctf_val" if m in hold else "ctf"
+        yield _seri(f"{src}/machine{m}", src, "it", np.concatenate(ts), X, np.concatenate(ls),
+                    [f"kpi{c}" for c in range(X.shape[1])], "row", False,
+                    note="veri merkezi makinesi, 49 KPI, 30 sn; ilk 5 gün etiketsiz; yıl varsayım (2019)")
+
+
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
            "pump": load_pump, "smd": load_smd, "cnc": load_cnc, "wind_gearbox": load_wind_gearbox,
@@ -829,7 +1033,8 @@ LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, 
            "telecom_milan": load_telecom_milan, "bidmc": load_bidmc, "batadal": load_batadal, "mitbih": load_mitbih, "ved": load_ved, "stocks": load_stocks, "esa": load_esa,
            "bosch_cnc": load_bosch_cnc, "lbnl": load_lbnl, "ims_bearing": load_ims_bearing, "loghub": load_bgl,
            "binance": load_binance, "ucr": load_ucr, "psm": load_psm, "damadics": load_damadics,
-           "asd": load_asd, "uci": load_uci_small, "femto": load_femto, "kantine": load_kantine}
+           "asd": load_asd, "uci": load_uci_small, "femto": load_femto, "kantine": load_kantine,
+           "lead": load_lead, "w3": load_w3, "refit": load_refit, "esa_full": load_esa_full, "care": load_care, "msft": load_msft, "ctf": load_ctf}
 
 
 # =============================================================================

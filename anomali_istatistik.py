@@ -28,6 +28,11 @@ TRAIN_LABELED = {  # eğitim rolündeki etiketli kaynaklar (doğrulama/benchmark
     "hai": lambda sid: "/test" in sid and ("hai-20.07" in sid or "hai-21.03" in sid),
     "cats": lambda sid: sid.endswith("/train"),
     "esa": lambda sid: sid.endswith("/train"),
+    "esa_full": lambda sid: sid.endswith("/train"),
+    "lead": lambda sid: True,
+    "w3": lambda sid: True,
+    "care": lambda sid: True,
+    "ctf": lambda sid: True,
 }
 # BATADAL ve ASD tamamen doğrulamaya ayrıldı (zero-shot model seçimi); bankaya girmez.
 # Dışlananlar: loghub/BGL (tek satırlık log alarmı, sayaç MAD≈0 → genlik anlamsız), Bosch/kantine/LBNL

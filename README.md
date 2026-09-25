@@ -150,7 +150,7 @@ Kaynak sinyaller (trend + rastgele dalga biçimli mevsimsellik + gürültü) ras
 
 ### Gerçek anomali istatistikleriyle hizalama (v6)
 
-`anomali_istatistik.py`, eğitim rolündeki etiketli gerçek olaylardan (ESA, CATS, HAI 20.07/21.03, BATADAL train) süre, etkilenen sütun oranı,
+`anomali_istatistik.py`, eğitim rolündeki etiketli gerçek olaylardan (ESA-ADB, CATS, HAI 20.07/21.03, LEAD, 3W, CARE, CTF; eğitim rolü) süre, etkilenen sütun oranı,
 genlik (MAD), başlangıç dikliği, kalıcılık, dönüş ve varyans oranını çıkarıp üreticiyle karşılaştırır. Son ölçüm (kaynak dengeli, 358 gerçek olay):
 
 | Ölçü | Gerçek | Üretici |
@@ -348,7 +348,10 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
       (ASD medyan ROC ~0.72, tersine dönme düzeldi); benchmark'ta 7 setin 6'sında Matrix Profile'ı geçiyor, UCR'de −0.27 VUS-PR
       (tek "farklı döngü" arayan setlerde pencere bağlamı yetmiyor). MetroPT ters: döngüsel süreç arızada uç seviyede takılıyor.
 - [x] v7 hazırlığı: `topk5` satır skoru, zorluk 0.8 sınırı, 8000 adım, "döngü durması" anomalisi, açma-kapama normalleri
-- [ ] v7 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] Havuz genişletme (v8 öncesi): LEAD1.0, Petrobras 3W, REFIT, ESA-ADB tam (Mission1/2), CARE to Compare, Microsoft cloud
+      monitoring, Tsinghua CTF. Havuz 1,0 → 2,0 milyar hücre; etiketli gerçek anomali satırı ~4× arttı. Her yeni kaynağın bir
+      bölümü (bina/kuyu/çiftlik/makine) tamamen görülmemiş doğrulamada; banka kaynak dengeli örnekleniyor
+- [ ] v8 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)

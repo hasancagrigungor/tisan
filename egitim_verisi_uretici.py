@@ -212,7 +212,7 @@ def _bank():
     if _BANK is None:
         if _os.path.exists(BANK_PATH):
             d = np.load(BANK_PATH, allow_pickle=True)
-            _BANK = [dict(z=z, pre=int(p), L=int(L)) for z, p, L in zip(d["z"], d["pre"], d["L"])]
+            _BANK = [dict(z=z, pre=int(p), L=int(L), src=str(sr)) for z, p, L, sr in zip(d["z"], d["pre"], d["L"], d["source"])]
         else:
             _BANK = []
     return _BANK
@@ -225,7 +225,10 @@ def bank_anomaly(ctx, min_effect=0.3):
     if not bank:
         return False
     rng, X, T, k = ctx.rng, ctx.X, ctx.T, ctx.k
-    tpl = bank[int(rng.integers(len(bank)))]
+    # kaynak dengeli seçim: önce kaynak, sonra şablon (tek bir kaynak — ör. LEAD — bankaya hâkim olmasın)
+    srcs = sorted({b["src"] for b in bank})
+    pool = [b for b in bank if b["src"] == srcs[int(rng.integers(len(srcs)))]]
+    tpl = pool[int(rng.integers(len(pool)))]
     z = tpl["z"][tpl["pre"]:]                                   # olay + sonrası (önce bölümü ≈ 0 sapma)
     L0 = tpl["L"]
     scale_t = float(np.exp(rng.uniform(np.log(0.5), np.log(2.0))))
