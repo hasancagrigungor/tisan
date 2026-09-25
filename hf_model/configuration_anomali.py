@@ -12,7 +12,7 @@ class AnomaliConfig(PretrainedConfig):
                  patch=16, max_t=2048, max_ch=100, min_t=20,
                  extra_channels=("diff", "ms8", "ms64"), type_names=tuple(TYPES),
                  pos_encoding="rope", recon_head=True, use_types=False,
-                 temperature=1.0, row_agg="max", row_topk=3,
+                 temperature=1.0, row_agg="topk", row_topk=5,
                  row_temperature=1.0, row_bias=0.0, auto_reference=False, reference_threshold=0.5,
                  row_threshold=0.5, **kwargs):
         self.d_model = d_model
@@ -30,7 +30,7 @@ class AnomaliConfig(PretrainedConfig):
         self.use_types = use_types                    # anomali türü başlığı (isteğe bağlı yardımcı görev; varsayılan kapalı)
         self.type_names = list(type_names)
         self.temperature = temperature                # kalibrasyon (temperature scaling)
-        self.row_agg = row_agg                        # hücre → satır skoru: "max" (eğitimdeki satır kaybıyla aynı) | "topk" | "noisy_or"
+        self.row_agg = row_agg                        # hücre → satır skoru: "topk" (v6 teşhisinde en iyi: topk5) | "max" | "noisy_or"
         self.row_topk = row_topk
         # GPT-6 Astra: hücre ve satır kalibrasyonu ayrı; eski checkpoint için özdeş dönüşüm.
         self.row_temperature = row_temperature

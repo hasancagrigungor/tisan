@@ -337,6 +337,9 @@ def _inject_column(ctx, kind, c, s, e, sign, strength, variant, min_effect=0.3):
     elif kind == "flatline":
         if variant < 0.35:      # sensör takılması, sonra gerçek değere sıçrayarak dönüş
             x[seg] = x[s] + rng.normal(0, 0.02 * sd, L)
+        elif variant < 0.65:    # DÖNGÜ DURMASI: çevrimsel süreç uç bir seviyede takılı kalır (kompresör sürekli yükte, pompa açık kalır)
+            lvl = np.quantile(x, rng.choice([0.05, 0.1, 0.9, 0.95]))
+            x[seg] = lvl + rng.normal(0, 0.03 * sd, L)
         else:
             x[seg] = x[s]
     elif kind == "drift":
@@ -1766,6 +1769,12 @@ def _coupled_source(rng, T):
             x += np.cumsum(rng.normal(0, 1, T) * (rng.random(T) < 0.01)) * rng.uniform(0.2, 0.8)
         else:
             x += np.cumsum(rng.normal(0, rng.uniform(0.01, 0.08), T))
+    if rng.random() < 0.3:                                             # açma-kapama (duty cycle): kompresör, pompa, HVAC — NORMAL davranış
+        period = rng.uniform(10, max(12.0, T / 8))
+        duty = rng.uniform(0.15, 0.85)
+        jitter = np.cumsum(rng.normal(0, 0.02, T))                      # periyot hafif kayar (gerçek makine)
+        on = ((tt / period + jitter) % 1.0) < duty
+        x += rng.uniform(1.0, 3.0) * on.astype(float)
     x += rng.normal(0, rng.uniform(0.02, 0.4), T)
     if rng.random() < 0.2:                                             # rejim değişimi: normal ama tuhaf
         a = int(rng.integers(T // 4, 3 * T // 4)); x[a:] += rng.normal(0, 1.5)

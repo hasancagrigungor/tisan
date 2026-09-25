@@ -344,7 +344,11 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
       MetroPT, Pump eğitime/bankaya hiç girmez), kaynak-ortalamalı seçim, kalibrasyondan karar eşiği, `predict()` tekrarlı zaman
       damgası, banka tür etiketi −1, UCR EKG serileri ayrı raporlanır, otomatik referans varsayılan kapalı, satır skoru `max`
       (eğitimle aynı), bucketing ile dolgu israfı azaltıldı
-- [ ] v6 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] v6 eğitimi (34M, 12k adım): gerçek AUC-ROC 0.73 (en iyi), görülmemiş kaynaklar şansın belirgin üstünde
+      (ASD medyan ROC ~0.72, tersine dönme düzeldi); benchmark'ta 7 setin 6'sında Matrix Profile'ı geçiyor, UCR'de −0.27 VUS-PR
+      (tek "farklı döngü" arayan setlerde pencere bağlamı yetmiyor). MetroPT ters: döngüsel süreç arızada uç seviyede takılıyor.
+- [x] v7 hazırlığı: `topk5` satır skoru, zorluk 0.8 sınırı, 8000 adım, "döngü durması" anomalisi, açma-kapama normalleri
+- [ ] v7 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
