@@ -6,6 +6,7 @@ Sadece torch, numpy ve transformers kullanır. Ön işleme fonksiyonları eğiti
 birebir aynı şekilde kullanılır (egitim.ipynb bunları buradan içe aktarır).
 """
 import math
+import warnings
 
 import numpy as np
 import torch
@@ -333,8 +334,29 @@ class AnomaliModel(PreTrainedModel):
         return out_pr, out_tp
 
     @torch.no_grad()
-    def score_matrix(self, t, X, batch_size=8, stride=None, reference=None):
-        """(T, k) ham matris → (T, k) hücre olasılığı ve (T, k) tür id. Uzun veri kayan pencere,
+    def score_matrix(self, t, X, batch_size=8, stride=None, reference=None, multi_scale=None):
+        """(T, k) ham matris → (T, k) hücre olasılığı ve (T, k) tür id. Pencereden uzun seride config.multi_scale
+        (veya multi_scale) katsayılarıyla seyreltilmiş seri de skorlanır; olasılıklar multi_scale_agg ile birleşir."""
+        cfg = self.config
+        prob, types = self._score_single(t, X, batch_size, stride, reference)
+        factors = cfg.multi_scale if multi_scale is None else multi_scale
+        T, k = X.shape
+        for f in factors or ():
+            f = int(f)
+            n = T // f
+            if T <= cfg.max_t or f < 2 or n < cfg.min_t:
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)       # tümü NaN blok → NaN (fill_nan doldurur)
+                Xd = np.nanmean(X[:n * f].reshape(n, f, k), axis=1)
+            pd_, _ = self._score_single(np.asarray(t, dtype=np.float64)[:n * f:f], Xd, batch_size, None, None)
+            up = np.repeat(pd_, f, axis=0)
+            up = np.concatenate([up, np.repeat(up[-1:], T - len(up), axis=0)]) if len(up) < T else up
+            prob = np.maximum(prob, up) if cfg.multi_scale_agg == "max" else (prob + up) / 2
+        return prob, types
+
+    def _score_single(self, t, X, batch_size=8, stride=None, reference=None):
+        """Tek çözünürlük. Uzun veri kayan pencere,
         çok sütun 100'lük gruplarla işlenir.
         Referans normalizasyonu: `reference` verilmişse her pencere onunla normalize edilir. Verilmemiş ve
         config.auto_reference açıksa pencereler zaman sırasıyla işlenir; referans, son "normal" görünen

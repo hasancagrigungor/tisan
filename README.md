@@ -351,7 +351,14 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - [x] Havuz genişletme (v8 öncesi): LEAD1.0, Petrobras 3W, REFIT, ESA-ADB tam (Mission1/2), CARE to Compare, Microsoft cloud
       monitoring, Tsinghua CTF. Havuz 1,0 → 2,0 milyar hücre; etiketli gerçek anomali satırı ~4× arttı. Her yeni kaynağın bir
       bölümü (bina/kuyu/çiftlik/makine) tamamen görülmemiş doğrulamada; banka kaynak dengeli örnekleniyor
-- [ ] v8 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] v8 eğitimi (34M, 8000 adım): gerçek AUC-ROC 0.756 (v6: 0.73), görülmemiş 0.474; tanıdık 0.84. Teşhis: w3_val serilerinin
+      %40–97'si "anomali" (3W kararlı arıza dönemi de 1) → ROC ~0.5 ve eğitimde gerçek pozitiflerin ~%78'i bağlamsız etiket;
+      MetroPT arızası (24 saat) 4096'lık pencereden uzun → skor ters
+- [x] v9 hazırlığı: 3W etiketi olay başlangıcına (ilk 2048 satır) indirgendi, yavaş sınıflar (kireçlenme, hidrat) bilinmiyor;
+      CARE öngörücü etiket (güven 0.3); TEP etiketi arızanın ilk 100 satırına indirgendi (görünmez arızalar 3/9/15
+      bilinmiyor); anomali oranı > %50 seriler doğrulamadan çıkar; isteğe bağlı çok çözünürlüklü
+      skorlama (`multi_scale`, teşhiste seçilir)
+- [ ] v9 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)

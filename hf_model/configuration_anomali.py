@@ -14,7 +14,7 @@ class AnomaliConfig(PretrainedConfig):
                  pos_encoding="rope", recon_head=True, use_types=False,
                  temperature=1.0, row_agg="topk", row_topk=5,
                  row_temperature=1.0, row_bias=0.0, auto_reference=False, reference_threshold=0.5,
-                 row_threshold=0.5, **kwargs):
+                 row_threshold=0.5, multi_scale=(), multi_scale_agg="max", **kwargs):
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
@@ -42,6 +42,11 @@ class AnomaliConfig(PretrainedConfig):
         self.auto_reference = auto_reference
         self.reference_threshold = reference_threshold
         self.row_threshold = row_threshold            # kalibre satır skoru için karar eşiği (kalibrasyon setinde en iyi F1)
+        # Çok çözünürlüklü skorlama (v9): pencereden (max_t) uzun seride, blok ortalamasıyla f kat seyreltilmiş seri de
+        # skorlanır ve hücre olasılığıyla birleştirilir. Pencereden uzun olaylar (MetroPT: 24 saatlik kompresör arızası =
+        # 8.6k satır) normal bağlamıyla tek pencereye sığar. Boş = kapalı; defterdeki teşhis seçer.
+        self.multi_scale = list(multi_scale)
+        self.multi_scale_agg = multi_scale_agg        # "max" | "mean"
         super().__init__(**kwargs)
 
     @property

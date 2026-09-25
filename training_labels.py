@@ -9,7 +9,7 @@ def label_confidence(meta):
     explicit = meta.get("label_confidence", None)
     if explicit is not None and np.isfinite(float(explicit)):
         return float(explicit)
-    return 0.2 if meta.get("source") in WEAK_SOURCES else 1.0
+    return 0.2 if meta.get("source") in WEAK_SOURCES else 0.3 if meta.get("source") in {"care", "care_c"} else 1.0
 
 
 def row_targets(labels):

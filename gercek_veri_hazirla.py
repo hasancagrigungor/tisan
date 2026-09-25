@@ -63,6 +63,10 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "ctf": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)", "ctf_val": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)"}
 
 
+WEAK = {"cmapss", "ims_bearing", "femto"}      # etiket zaman sınırından türetilmiş
+PREDICTIVE = {"care", "care_c"}               # arızaya giden dönem: sinyalde her zaman görünür sapma yok
+
+
 def _unix(s):
     return pd.to_datetime(s).astype("int64").to_numpy() / 1e9
 
@@ -87,8 +91,8 @@ def _seri(sid, source, sector, t, X, labels, names, label_level, synthetic_time,
         "label": labels.ravel(),
     })
     # GPT-6 Astra: zaman sınırından türetilen etiketler doğrulanmış arıza etiketi değildir.
-    meta.setdefault("label_confidence", 0.2 if source in {"cmapss", "ims_bearing", "femto"} else 1.0)
-    meta.setdefault("label_quality", "weak" if source in {"cmapss", "ims_bearing", "femto"} else "source")
+    meta.setdefault("label_confidence", 0.2 if source in WEAK else 0.3 if source in PREDICTIVE else 1.0)
+    meta.setdefault("label_quality", "weak" if source in WEAK else "predictive" if source in PREDICTIVE else "source")
     row = labels.max(axis=1)
     kat = dict(series_id=sid, source=source, sector=sector, n_rows=T, n_channels=k,
                step_s=float(np.median(np.diff(t))) if T > 1 else np.nan,
@@ -314,6 +318,23 @@ def load_cats():
                     note="kontrollü anomali (uydu benzeri simülasyon test düzeneği); kök neden + etkilenen kanal etiketli")
 
 
+TEP_ONSET = 100            # satır (3 dk → 5 saat): arızanın ilk bölümü
+TEP_GORUNMEZ = {3, 9, 15}  # literatürde ölçümlerden ayırt edilemeyen arızalar
+
+
+def tep_etiket(lab, fault):
+    """TEP: arıza 20. örnekte başlar ve 500 satırın sonuna dek sürer (%96 pozitif); pencere normalizasyonu arızalı
+    durumu "normal" gösterir. w3_etiket ile aynı ilke: ilk TEP_ONSET satır 1, kalanı -1; görünmez arızalar tümüyle -1."""
+    lab = lab.copy()
+    if fault in TEP_GORUNMEZ:
+        lab[lab == 1] = -1
+        return lab
+    idx = np.flatnonzero(lab == 1)
+    if len(idx):
+        lab[idx[TEP_ONSET:]] = -1
+    return lab
+
+
 def load_tep(runs_per_fault=25, normal_runs=50):
     """Tennessee Eastman (Rieth 2017): 52 değişken, 3 dk, koşu başına 500 örnek; arıza 20. örnekte başlar."""
     base = RAW / "tep"
@@ -331,6 +352,7 @@ def load_tep(runs_per_fault=25, normal_runs=50):
                 lab = np.zeros(T, dtype=np.int8)
                 if faulty:
                     lab[r["sample"].to_numpy() > 20] = 1
+                    lab = tep_etiket(lab, int(fault))
                 yield _seri(f"tep/fault{int(fault):02d}/run{int(run)}", "tep", "process_control", _synthetic_time(T, 180.0),
                             r[names].to_numpy(), lab, names, "row", True,
                             note=f"simülasyon; arıza {int(fault)} 20. örnekten sonra (0 = arızasız)")
@@ -761,9 +783,31 @@ def load_lead(val_frac=0.2):
                     note="saatlik bina elektrik sayacı; elle etiketlenmiş anomali")
 
 
+W3_ONSET = 2048            # satır (1 sn → ~34 dk): olayın görünür başlangıcı
+W3_YAVAS = {7, 8}          # kireçlenme, hidrat: günler süren kademeli süreç, pencere içinde normal bağlam yok
+
+
+def w3_etiket(lab, sinif):
+    """3W etiketi, bağlamla ayırt edilebilen kısma indirgenir. Her kesintisiz olay bloğunun ilk W3_ONSET satırı 1,
+    kalanı -1 (kararlı arıza: pencerenin tamamı arıza olunca model normal bağlam göremez; v8'de w3_val ROC ~0.5,
+    skor tabanı yükseldi). Yavaş sınıflarda olay satırlarının tamamı -1."""
+    lab = lab.copy()
+    pos = lab == 1
+    if sinif in W3_YAVAS:
+        lab[pos] = -1
+        return lab
+    idx = np.flatnonzero(pos)
+    if len(idx):
+        starts = idx[np.r_[True, np.diff(idx) > 1]]
+        run_start = starts[np.searchsorted(starts, idx, side="right") - 1]
+        lab[idx[idx - run_start >= W3_ONSET]] = -1
+    return lab
+
+
 def load_w3(val_frac=0.2):
     """Petrobras 3W 2.0: açık deniz petrol kuyuları, 1 sn. Yalnızca GERÇEK örnekler (WELL-*); simüle ve elle çizilmiş atlanır.
-    Etiket: class 0 = normal, 1–9 = istenmeyen olay, 101–109 = olaya geçiş (ikisi de 1), NaN = etiketsiz (-1).
+    Etiket: class 0 = normal, 1–9 = istenmeyen olay, 101–109 = olaya geçiş (ikisi de 1), NaN = etiketsiz (-1);
+    ardından w3_etiket ile olayın ilk W3_ONSET satırına indirgenir.
     Kuyuların %20'si tamamen görülmemiş doğrulama (w3_val)."""
     base = RAW / "w3"
     files = sorted(base.glob("*/WELL-*.parquet"))
@@ -778,7 +822,7 @@ def load_w3(val_frac=0.2):
         names = [c for c in d.columns if c not in ("class", "state") and d[c].notna().mean() > 0.5 and d[c].std(skipna=True) > 0]
         if not names or len(d) < 200:
             continue
-        lab = np.where(cls.isna(), -1, (cls > 0).astype(int)).astype(np.int8)
+        lab = w3_etiket(np.where(cls.isna(), -1, (cls > 0).astype(int)).astype(np.int8), int(f.parent.name))
         src = "w3_val" if well in hold else "w3"
         yield _seri(f"{src}/{f.parent.name}/{f.stem}", src, "oil_gas", d.index.astype("int64").to_numpy() / 1e9,
                     d[names].to_numpy(dtype=float), lab, names, "row", False,
