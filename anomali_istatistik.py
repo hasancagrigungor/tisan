@@ -30,7 +30,8 @@ TRAIN_LABELED = {  # eğitim rolündeki etiketli kaynaklar (doğrulama/benchmark
     "esa": lambda sid: sid.endswith("/train"),
     "esa_full": lambda sid: sid.endswith("/train"),
     "lead": lambda sid: True,
-    "w3": lambda sid: True,
+    # w3 bankaya girmez (v9): etiket olay başlangıcına kesildiği için şablonların %95'i yapay olarak tam 2048 satır ve
+    # genlik ~1 MAD (görünmez); sentetik enjeksiyonda gürültülü etiket oluyordu. w3 eğitimde etiket olarak kalır.
     "care": lambda sid: True,
     "ctf": lambda sid: True,
 }
