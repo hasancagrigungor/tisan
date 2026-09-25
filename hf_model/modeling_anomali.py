@@ -462,6 +462,8 @@ class AnomaliResult:
         self.cell_scores, self.cell_types = cell_scores, cell_types
         self.threshold, self.type_names, self.note = threshold, type_names, note
         self.row_scores = calibrate_rows(aggregate_rows(cell_scores, row_agg, row_topk), row_temperature, row_bias)
+        # eşik kalibre ölçekte: hücreler de aynı dönüşümle karşılaştırılır (ham olasılık ~0.5 > eşik → her hücre "anomali" hatası)
+        self.cell_calibrated = calibrate_rows(cell_scores, row_temperature, row_bias)
         self.anomaly_rows = np.where(self.row_scores > threshold)[0].tolist()
         self.events = self._events()
 
@@ -473,7 +475,9 @@ class AnomaliResult:
         breaks = np.where(np.diff(rows) > 1)[0]
         for seg in np.split(rows, breaks + 1):
             s, e = int(seg[0]), int(seg[-1])
-            cells = self.cell_scores[s:e + 1] > self.threshold
+            cells = self.cell_calibrated[s:e + 1] > self.threshold
+            if not cells.any():                                             # satır skoru top-k: tek hücre eşiği aşmayabilir
+                cells = self.cell_calibrated[s:e + 1] >= self.cell_calibrated[s:e + 1].max(1, keepdims=True)
             chans = np.where(cells.any(0))[0].tolist()
             ty = self.cell_types[s:e + 1][cells]
             kind = self.type_names[int(np.bincount(ty).argmax())] if len(ty) and ty.max() > 0 else "anomaly"
@@ -495,11 +499,16 @@ class AnomaliResult:
         k = min(self.values.shape[1], max_channels)
         fig, axes = plt.subplots(k + 1, 1, figsize=(12, 1.6 * (k + 1)), sharex=True)
         x = np.arange(len(self.timestamps))
+        row_on = np.zeros(len(x), dtype=bool)
+        row_on[self.anomaly_rows] = True
         for c in range(k):
             axes[c].plot(x, self.values[:, c], lw=0.8)
-            m = self.cell_scores[:, c] > self.threshold
+            m = row_on & (self.cell_calibrated[:, c] > self.threshold)     # yalnızca anomali satırlarında eşiği aşan hücre
             axes[c].scatter(x[m], self.values[m, c], color="red", s=8)
             axes[c].set_ylabel(f"ch_{c}")
+        for ax in axes:
+            for ev in self.events:
+                ax.axvspan(ev["start"], ev["end"] + 1, color="red", alpha=0.08, lw=0)
         axes[-1].plot(x, self.row_scores, color="black", lw=0.8)
         axes[-1].axhline(self.threshold, color="red", ls="--", lw=0.8)
         axes[-1].set_ylabel("score")
