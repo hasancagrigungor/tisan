@@ -74,13 +74,24 @@ s["raw"], s["labels"], s["meta"]
 | CARE to Compare (rüzgâr SCADA) | 37 (A/B) / 58 (C → care_c) | 46–100 | 10 dk | satır (olay penceresi) | CC-BY-SA-4.0 | – |
 | Microsoft cloud monitoring | 60 | 1 | değişken | satır | MIT | – |
 | Tsinghua CTF (150 makine örneklendi) | 120 / 30 (ctf_val) | 49 | 30 sn | satır (son 8 gün; ilk 5 gün yok) | belirsiz | – |
+| Kelmarsh / Penmanshiel rüzgâr çiftlikleri | 18 / 28 (penmanshiel görülmemiş) | 40 | 10 dk | satır (durum kaydı: zorunlu duruş/arıza, güven 0.5) | CC-BY-4.0 | – |
+| BattLeDIM 2020 (L-Town su şebekesi) | 2 | 37 | 5 dk | satır (yeni sızıntı başlangıcı 3 gün, güven 0.5) | CC-BY-4.0 | – |
+| PV arıza (Lazzaretti vd.) | 1 | 6 | ~1 sn (sentetik) | satır (kısa devre/bozulma/açık devre; gölgelenme -1) | Apache-2.0 | – |
+| ALFA (İHA arızaları) | 37 / 9 (alfa_val) | ~20 | 10 Hz | satır (arıza anından sonrası) | CC0 | – |
+| OPSSAT-AD (CubeSat) | 9 (görülmemiş) | 1 | 1–5 sn | satır (segment) | CC-BY-4.0 | – |
+| ROAD CAN saldırıları | 13 (görülmemiş) | 40 | 20 Hz | satır (enjekte mesaj) | CC-BY-4.0 | – |
 | LOTSA (100 alt küme, örneklenmiş) | 12.109 | 1–çok | değişken | yok | alt kümeye göre | – |
 
 **Eğitim/doğrulama bölmesi (egitim.ipynb):** HAI 20.07 ve 21.03 test dosyaları gerçek etiketleriyle eğitimde; HAI 22.04/23.05 test,
 wind `labeled`, CATS `val`, ESA-ADB `val` doğrulamada. Tamamen görülmemiş kaynaklar (eğitime ve anomali bankasına hiç girmez):
-BATADAL, ASD, MetroPT-3, Pump, `lead_val`, `w3_val`, `esa2` (ESA Mission2), `care_c` (CARE farm C), Microsoft (`msft`), `ctf_val`. Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
+BATADAL, ASD, MetroPT-3, Pump, `lead_val`, `w3_val`, `esa2` (ESA Mission2), `care_c` (CARE farm C), Microsoft (`msft`), `ctf_val`, `penmanshiel`, `opssat`, `road`, `alfa_val`.
+Nihai test (hiçbir seçime girmez): `lead_val`, `msft`, `ctf_val`, `esa2`, `care_c`.
+
+**Etiket denetimi (`etiket_denetimi.py`):** yeni kaynak havuza girmeden önce anomali oranı > %50, pencereden (4096) uzun olay
+ve olay öncesi normal bağlam eksikliği denetlenir; bayraklı kaynaklarda `baglam_duzelt` (olay başlangıcı + bağlamsız olay → bilinmiyor)
+uygulanır (3W, TEP, LBNL, bosch_cnc, kantine, rüzgâr, ALFA, PV). Amaç: modelin eğitimde gerçek anomali de görmesi, doğrulamanın farklı yıl/düzenekte kalması.
 
 **Dikkat:** `benchmark` sütunu dolu olan seriler TSB-AD'de değerlendirme verisi. README §9 gereği
 eğitime girerlerse o bölümler değerlendirmeden çıkarılmalı (veya tersi).
 
-**Havuz (Eylül 2026):** 17.467 seri, 223M satır, ~2,0 milyar hücre.
+**Havuz (Eylül 2026):** 17.584 seri, ~227M satır, ~2,1 milyar hücre.

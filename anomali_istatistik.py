@@ -34,6 +34,11 @@ TRAIN_LABELED = {  # eğitim rolündeki etiketli kaynaklar (doğrulama/benchmark
     # genlik ~1 MAD (görünmez); sentetik enjeksiyonda gürültülü etiket oluyordu. w3 eğitimde etiket olarak kalır.
     "care": lambda sid: True,
     "ctf": lambda sid: True,
+    "kelmarsh": lambda sid: True,
+    "alfa": lambda sid: True,
+    # battledim bankaya girmez: etiket 3 günlük başlangıç penceresine kesildiği için şablon uzunluğu yapay (864) ve
+    # genlik ~0.8 MAD (w3 ile aynı sorun). Eğitimde etiket olarak kalır.
+    "pvfault": lambda sid: True,
 }
 # BATADAL ve ASD tamamen doğrulamaya ayrıldı (zero-shot model seçimi); bankaya girmez.
 # Dışlananlar: loghub/BGL (tek satırlık log alarmı, sayaç MAD≈0 → genlik anlamsız), Bosch/kantine/LBNL

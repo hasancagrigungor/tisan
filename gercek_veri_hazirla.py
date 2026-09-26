@@ -60,8 +60,13 @@ LISANS = {"skab": "AGPL-3.0", "skab_teaser": "AGPL-3.0", "nab": "AGPL-3.0",
           "esa_full": "CC-BY-4.0 (ESA-ADB)", "esa2": "CC-BY-4.0 (ESA-ADB)",
           "care": "CC-BY-SA-4.0 (CARE to Compare)", "care_c": "CC-BY-SA-4.0 (CARE to Compare)",
           "refit": "CC-BY-4.0 (REFIT, Strathclyde)", "msft": "MIT (Microsoft)",
-          "ctf": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)", "ctf_val": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)"}
+          "ctf": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)", "ctf_val": "belirsiz (Tsinghua NetMan, lisans belirtilmemiş)",
+          "kelmarsh": "CC-BY-4.0 (Cubico, Zenodo)", "penmanshiel": "CC-BY-4.0 (Cubico, Zenodo)",
+          "battledim": "CC-BY-4.0 (BattLeDIM, Zenodo)", "opssat": "CC-BY-4.0 (OPSSAT-AD, Zenodo)", "alfa": "CC0 (ALFA, CMU AirLab)", "alfa_val": "CC0 (ALFA, CMU AirLab)",
+          "road": "CC-BY-4.0 (ROAD, ORNL, Zenodo)", "pvfault": "Apache-2.0 (Costa vd., GitHub)"}
 
+
+from etiket_denetimi import baglam_duzelt  # noqa: E402  (olay başlangıcı + bağlam kuralı)
 
 WEAK = {"cmapss", "ims_bearing", "femto"}      # etiket zaman sınırından türetilmiş
 PREDICTIVE = {"care", "care_c"}               # arızaya giden dönem: sinyalde her zaman görünür sapma yok
@@ -545,7 +550,7 @@ def load_bosch_cnc(max_files_per_op=40, down=10):
                 n = len(a) // down
                 a = a[:n * down].reshape(n, down, -1).mean(1)
                 parts.append(a); labs.append(np.full(n, 1 if f.parent.name == "bad" else 0, dtype=np.int8))
-            X, lab = np.vstack(parts), np.concatenate(labs)
+            X, lab = np.vstack(parts), baglam_duzelt(np.concatenate(labs))
             yield _seri(f"bosch_cnc/{m.name}/{op.name}", "bosch_cnc", "manufacturing", _synthetic_time(len(X), down / 2000),
                         X, lab, ["acc_x", "acc_y", "acc_z"], "row", True,
                         note=f"{len(files)} proses art arda; kötü proses = 1")
@@ -561,7 +566,7 @@ def load_lbnl():
         tcol = d.columns[0]
         names = [c for c in d.columns if c not in (tcol, lcol) and pd.api.types.is_numeric_dtype(d[c]) and d[c].notna().any()]
         y = d[lcol].fillna(0).astype(int).to_numpy()
-        lab = y.astype(np.int8) if 0 < y.mean() < 1 else -1
+        lab = baglam_duzelt(y.astype(np.int8)) if 0 < y.mean() < 1 else -1        # olay başlangıcı + bağlam (etiket_denetimi)
         yield _seri(f"lbnl/{f.stem}", "lbnl", "building", _unix(pd.to_datetime(d[tcol], format="mixed")),
                     d[names].to_numpy(dtype=float), lab, names, "row", False,
                     note="HVAC arıza senaryoları; dosya tamamen arızalıysa etiketsiz")
@@ -755,7 +760,7 @@ def load_kantine():
             ep = int(d["episode_index"].iloc[0])
             X = np.column_stack([np.stack(d["observation.state"].to_numpy()), np.stack(d["action"].to_numpy())])
             parts.append(X); labs.append(np.full(len(X), (1 if ep >= 5 else 0) if labeled else -1, dtype=np.int8))
-        X, lab = np.vstack(parts), np.concatenate(labs)
+        X, lab = np.vstack(parts), baglam_duzelt(np.concatenate(labs))
         names = [f"state_{i}" for i in range(6)] + [f"action_{i}" for i in range(6)]
         yield _seri(f"kantine/{dsdir.name}", "kantine", "robotics", _synthetic_time(len(X), 1 / info["fps"]), X, lab,
                     names, "row", True, note=("ilk 5 bölüm normal, sonrakiler anomali senaryosu" if labeled else "etiketsiz (tüm bölümler senaryo)"))
@@ -822,7 +827,7 @@ def load_w3(val_frac=0.2):
         names = [c for c in d.columns if c not in ("class", "state") and d[c].notna().mean() > 0.5 and d[c].std(skipna=True) > 0]
         if not names or len(d) < 200:
             continue
-        lab = w3_etiket(np.where(cls.isna(), -1, (cls > 0).astype(int)).astype(np.int8), int(f.parent.name))
+        lab = baglam_duzelt(w3_etiket(np.where(cls.isna(), -1, (cls > 0).astype(int)).astype(np.int8), int(f.parent.name)), W3_ONSET)
         src = "w3_val" if well in hold else "w3"
         yield _seri(f"{src}/{f.parent.name}/{f.stem}", src, "oil_gas", d.index.astype("int64").to_numpy() / 1e9,
                     d[names].to_numpy(dtype=float), lab, names, "row", False,
@@ -1068,6 +1073,221 @@ def load_ctf(n_machines=150, val_frac=0.2):
                     [f"kpi{c}" for c in range(X.shape[1])], "row", False,
                     note="veri merkezi makinesi, 49 KPI, 30 sn; ilk 5 gün etiketsiz; yıl varsayım (2019)")
 
+RUZGAR_ARIZA = ("error", "Safety chain")          # durum kaydında arıza sınıfı (Service contract category)
+
+
+def _ruzgar_etiket(ts, status, onset=2048):
+    """Greenbyte durum kaydından satır etiketi. Duruş + (IEC 'Forced outage' veya arıza sınıfı) → 1;
+    diğer duruş ve iletişim kesintisi (bakım, buzlanma, şebeke, manuel) → -1; uyarılar ve geri kalanı 0.
+    Her arıza bloğunun ilk `onset` satırı 1 kalır (etiket_denetimi.olay_basi ile aynı ilke)."""
+    lab = np.zeros(len(ts), dtype=np.int8)
+    st = status.copy()
+    st["a"] = pd.to_datetime(st["Timestamp start"], errors="coerce")
+    st["b"] = pd.to_datetime(st["Timestamp end"].replace("-", np.nan), errors="coerce").fillna(ts.max() + pd.Timedelta("10min"))
+    st = st.dropna(subset=["a"])
+    svc = st["Service contract category"].fillna("")
+    ariza = (st["Status"] == "Stop") & ((st["IEC category"] == "Forced outage") | svc.str.contains("|".join(RUZGAR_ARIZA)))
+    # uyarılar (yılda binlerce saat, türbin üretmeye devam eder) normal; arıza dışı duruş ve veri kesintisi bilinmiyor
+    belirsiz = st["Status"].isin(["Stop", "Communication"]) & ~ariza
+    tv = ts.to_numpy()
+    for mask, val in ((belirsiz, -1), (ariza, 1)):                       # arıza sonra yazılır: çakışmada 1 kazanır
+        for a, b in zip(st.loc[mask, "a"].to_numpy(), st.loc[mask, "b"].to_numpy()):
+            i, j = np.searchsorted(tv, a, "left"), np.searchsorted(tv, b, "right")
+            lab[max(i - 1, 0):j] = val                                   # 10 dk ortalaması başlangıcı içeren satırdan itibaren
+    from etiket_denetimi import olay_basi
+    return olay_basi(lab, onset)
+
+
+# Türetilmiş/muhasebe sütunları: duruşta sıfırdan farklı değer alır (Lost Production to Downtime vb.) → etiket sızıntısı.
+# Yalnız fiziksel ölçümler kalır; özet istatistikler (min/max/std) ve kümülatif sayaçlar da çıkar.
+RUZGAR_KARA = ("Lost Production", "Energy", "Potential", "Budget", "Theoretical", "Virtual", "Compensated", "Available Capacity",
+               "setpoint", "counter", "Long Term", "Cascading", "Manufacturer", "Production", "Standard deviation", "StdDev",
+               ", Min", ", Max", ", Std", "Minimum", "Maximum", "Time-based", "Contractual", "Curtailment", "Count", "Hours", "Status",
+               "Performance Ratio", "Capacity factor", "calibration point")
+
+
+def _ruzgar_kanallar(d, max_cols=40):
+    names = [c for c in d.columns if c != "ts" and not any(x.lower() in c.lower() for x in RUZGAR_KARA)
+             and pd.api.types.is_numeric_dtype(d[c]) and d[c].notna().mean() > 0.5 and d[c].std() > 0]
+    if len(names) > max_cols:                                           # en oynak sütunlar (CARE ile aynı ölçüt)
+        names = d[names].std().div(d[names].abs().median() + 1e-9).sort_values(ascending=False).index[:max_cols].tolist()
+    return names
+
+
+def load_ruzgar_greenbyte():
+    """Kelmarsh (6 türbin) ve Penmanshiel (14 türbin) rüzgâr çiftlikleri, Senvion, 10 dk SCADA, CC-BY-4.0 (Zenodo).
+    Türbin-yıl başına bir seri. Etiket durum kaydından (_ruzgar_etiket), güven 0.5.
+    Kelmarsh eğitim ('kelmarsh'); Penmanshiel ayrı çiftlik → tamamen görülmemiş ('penmanshiel')."""
+    import zipfile, io
+    for farm in ("kelmarsh", "penmanshiel"):
+        for zp in sorted((RAW / farm).glob("*_SCADA_*.zip")):
+            with zipfile.ZipFile(zp) as z:
+                data = sorted(n for n in z.namelist() if n.startswith("Turbine_Data_"))
+                for n in data:
+                    stn = n.replace("Turbine_Data_", "Status_")
+                    if stn not in z.namelist():
+                        continue
+                    d = pd.read_csv(io.BytesIO(z.read(n)), skiprows=9, low_memory=False)
+                    d = d.rename(columns={d.columns[0]: "ts"})
+                    d["ts"] = pd.to_datetime(d["ts"], errors="coerce")
+                    d = d.dropna(subset=["ts"]).sort_values("ts")
+                    if len(d) < 1000:
+                        continue
+                    status = pd.read_csv(io.BytesIO(z.read(stn)), skiprows=9)
+                    names = _ruzgar_kanallar(d)
+                    lab = _ruzgar_etiket(d["ts"], status)
+                    parts = n.split("_")                                 # Turbine_Data_Kelmarsh_1_2021-01-01_-_...
+                    tur, yil = parts[3], parts[4][:4]
+                    yield _seri(f"{farm}/wt{int(tur):02d}/{yil}", farm, "energy", d["ts"].astype("int64").to_numpy() / 1e9,
+                                d[names].to_numpy(dtype=float), lab, names, "row", False,
+                                label_confidence=0.5, label_quality="log",
+                                note=f"{farm.title()} türbin {tur}, {yil}; etiket durum kaydından (zorunlu duruş/arıza)")
+
+def _battledim_etiket(ts, L, onset=864, min_leak=3.0, repair=288):
+    """Yeni sızıntının başlangıcı anomali: sızıntılar aylarca sürer ve üst üste biner (yılın %98-100'ü en az bir sızıntılı),
+    bu yüzden "sızıntı var" etiketi anlamsız. Başlangıçtan sonraki `onset` satır 1 (5 dk → 3 gün); en fazla debisi
+    < min_leak m3/h olan sızıntılar -1 (toplam debi ~200 m3/h içinde görünmeyebilir); onarım ± `repair` satır -1;
+    yıl başında zaten var olan sızıntı etiketlenmez (başlangıcı görünmüyor). Geri kalan 0."""
+    lab = np.zeros(len(ts), dtype=np.int8)
+    tv = ts.to_numpy()
+    for c in L.columns:
+        on = np.flatnonzero(L[c].to_numpy() > 0)
+        if not len(on):
+            continue
+        a, b = on[0], on[-1] + 1
+        if b < len(lab):                                                # onarım: basınç toparlanması
+            lab[max(0, b - repair):b + repair] = np.where(lab[max(0, b - repair):b + repair] == 1, 1, -1)
+        if a == 0:
+            continue
+        val = 1 if L[c].max() >= min_leak else -1
+        seg = slice(a, min(b, a + onset))
+        lab[seg] = np.maximum(lab[seg], val) if val == 1 else np.where(lab[seg] == 1, 1, -1)
+    return lab
+
+
+def load_battledim():
+    """BattLeDIM 2020 (L-Town su şebekesi, CC-BY-4.0): EPANET yüksek sadakatli simülasyon, 5 dk SCADA;
+    33 basınç + 3 debi + 1 tank seviyesi, 2018 ve 2019 (birer yıllık seri). Etiket _battledim_etiket (güven 0.5)."""
+    base = RAW / "battledim"
+    rd = lambda f: pd.read_csv(base / f, sep=";", decimal=",", index_col=0, parse_dates=True)
+    for y in (2018, 2019):
+        X = pd.concat([rd(f"{y}_SCADA_Pressures.csv"), rd(f"{y}_SCADA_Flows.csv"), rd(f"{y}_SCADA_Levels.csv")], axis=1)
+        L = rd(f"{y}_Leakages.csv").reindex(X.index).fillna(0)
+        lab = _battledim_etiket(X.index, L)
+        yield _seri(f"battledim/{y}", "battledim", "water", X.index.astype("int64").to_numpy() / 1e9, X.to_numpy(dtype=float), lab,
+                    list(X.columns), "row", False, label_confidence=0.5, label_quality="onset",
+                    note=f"L-Town {y}: 33 basınç, 3 debi, 1 tank; etiket yeni sızıntı başlangıcı (3 gün)")
+
+
+def load_opssat():
+    """OPSSAT-AD (ESA OPS-SAT CubeSat telemetrisi, CC-BY-4.0): 9 kanal, 1/5 sn; segment bazında elle etiket.
+    Kanal başına segmentler zaman sırasıyla birleştirilir (segment arası boşluk gerçek zaman damgasında korunur).
+    Farklı görev (ESA-ADB'den bağımsız) → tamamen görülmemiş."""
+    d = pd.read_csv(RAW / "opssat" / "segments.csv")
+    d["ts"] = pd.to_datetime(d["timestamp"], utc=True)
+    for ch, g in d.sort_values("ts").groupby("channel"):
+        if len(g) < 300:
+            continue
+        yield _seri(f"opssat/{ch}", "opssat", "space", g["ts"].astype("int64").to_numpy() / 1e9, g[["value"]].to_numpy(dtype=float),
+                    g["anomaly"].to_numpy().astype(np.int8), [ch], "row", False,
+                    note="OPS-SAT telemetri kanalı; segment etiketleri, segmentler zaman sırasıyla birleşik")
+
+def load_pvfault():
+    """Güneş PV arızası (Lazzaretti vd. 2020, Sensors; Apache-2.0): 2 dizili 5 kW şebeke bağlantılı santral, 16 gün,
+    ~1 sn (zaman damgası yok → sentetik zaman). Kanallar: 2 dize voltajı/akımı, ışınım, panel sıcaklığı.
+    Etiket f_nv: 1-3 (kısa devre, bozulma, açık devre; elle oluşturulmuş) = 1; 4 (gölgelenme: komşu binalar, her gün
+    tekrar eder) = -1; 0 = 0."""
+    import scipy.io as sio
+    base = RAW / "pvfault"
+    amb, el = sio.loadmat(base / "dataset_amb.mat"), sio.loadmat(base / "dataset_elec.mat")
+    names = ["vdc1", "vdc2", "idc1", "idc2", "irr", "pvt"]
+    X = np.column_stack([el[n].ravel() if n in el else amb[n].ravel() for n in names]).astype(float)
+    f = amb["f_nv"].ravel()
+    lab = np.where(np.isin(f, [1, 2, 3]), 1, np.where(f == 4, -1, 0)).astype(np.int8)
+    yield _seri("pvfault/plant", "pvfault", "energy", _synthetic_time(len(X), 1.0), X, baglam_duzelt(lab), names, "row", True,
+                note="PV santrali 16 gün; kısa devre/bozulma/açık devre = 1, gölgelenme belirsiz")
+
+ALFA_KONULAR = {                                   # konu → alınacak alanlar (ROS CSV, field.* önekiyle)
+    "mavros-nav_info-roll": ["commanded", "measured"], "mavros-nav_info-pitch": ["commanded", "measured"],
+    "mavros-nav_info-yaw": ["commanded", "measured"], "mavros-nav_info-airspeed": ["commanded", "measured"],
+    "mavros-vfr_hud": ["airspeed", "groundspeed", "throttle", "altitude", "climb"],
+    "mavros-local_position-velocity": ["twist.linear.x", "twist.linear.y", "twist.linear.z",
+                                       "twist.angular.x", "twist.angular.y", "twist.angular.z"],
+    "mavros-imu-data": ["linear_acceleration.x", "linear_acceleration.y", "linear_acceleration.z"],
+}
+
+
+def load_alfa(hz=10, val_frac=0.2):
+    """ALFA (CMU AirLab, CC0): sabit kanatlı İHA, 47 otonom uçuş; motor/kanatçık/dümen/irtifa dümeni arızası uçuş
+    ortasında. ROS konuları 10 Hz ortak ızgaraya hizalanır (asof). Etiket: failure_status-* konusunda ilk 1'den
+    itibaren 1, öncesi 0; arızasız uçuş tamamen 0; 'no_ground_truth' uçuşu atlanır. Uçuşların %20'si alfa_val."""
+    import zipfile, io
+    z = zipfile.ZipFile(RAW / "alfa" / "processed.zip")
+    names = z.namelist()
+    flights = sorted({n.split("/")[1] for n in names if n.count("/") >= 2 and n.split("/")[1]})
+    flights = [f for f in flights if "no_ground_truth" not in f]
+    hold = _holdout(flights, val_frac, seed=13)
+    for fl in flights:
+        pre = f"processed/{fl}/{fl}-"
+        cols, frames = [], []
+        for topic, fields in ALFA_KONULAR.items():
+            if pre + topic + ".csv" not in names:
+                continue
+            d = pd.read_csv(io.BytesIO(z.read(pre + topic + ".csv")))
+            keep = [f"field.{f}" for f in fields if f"field.{f}" in d.columns]
+            d = d[["%time"] + keep].rename(columns={f"field.{f}": f"{topic.split('-')[-1]}.{f}" for f in fields})
+            frames.append(d.sort_values("%time"))
+        if not frames:
+            continue
+        t0 = max(f["%time"].iloc[0] for f in frames); t1 = min(f["%time"].iloc[-1] for f in frames)
+        grid = pd.DataFrame({"%time": np.arange(t0, t1, int(1e9 / hz), dtype=np.int64)})
+        if len(grid) < 200:
+            continue
+        for f in frames:
+            grid = pd.merge_asof(grid, f, on="%time", direction="backward")
+        lab = np.zeros(len(grid), dtype=np.int8)
+        fails = [n for n in names if n.startswith(pre + "failure_status")]
+        for fn in fails:
+            fs = pd.read_csv(io.BytesIO(z.read(fn)))
+            on = fs.loc[fs["field.data"] != 0, "%time"]
+            if len(on):
+                lab[grid["%time"].to_numpy() >= on.iloc[0]] = 1
+        if "no_failure" not in fl and not fails:
+            lab[:] = -1                                                   # arızalı uçuş ama zaman kaydı yok
+        X = grid.drop(columns="%time")
+        X = X.loc[:, X.std() > 0]
+        src = "alfa_val" if fl in hold else "alfa"
+        yield _seri(f"{src}/{fl}", src, "aerospace", grid["%time"].to_numpy() / 1e9, X.to_numpy(dtype=float),
+                    baglam_duzelt(lab, 2048, 50), list(X.columns), "row", False,
+                    note=f"ALFA uçuşu {fl.split('_', 2)[-1] if '_' in fl else fl}; {hz} Hz")
+
+def load_road(hz=20, max_cols=40):
+    """ROAD CAN saldırı verisi (ORNL, CC-BY-4.0): gerçek araç, dinamometre; sinyal çözümlenmiş mesajlar.
+    Mesajlar hz'lik ızgaraya çevrilir: sütun = (CAN ID, sinyal), bölmedeki son değer, ileri taşınır. Önce saldırıya
+    uğrayan ID'lerin sinyalleri, sonra en oynak sinyallerle max_cols'a tamamlanır. Etiket: bölmede enjekte mesaj
+    (Label=1) varsa 1. Hızlandırıcı saldırısı etiketsiz (enjeksiyon kayıt öncesi) → atlanır. Tamamı görülmemiş."""
+    import zipfile, io
+    z = zipfile.ZipFile(RAW / "road" / "road.zip")
+    for n in sorted(x for x in z.namelist() if x.startswith("road/signal_extractions/attacks/") and x.endswith(".csv")):
+        d = pd.read_csv(io.BytesIO(z.read(n)))
+        if d["Label"].sum() == 0:
+            continue
+        d["bin"] = (d["Time"] * hz).astype(int)
+        sig = [c for c in d.columns if c.startswith("Signal_")]
+        long = d.melt(id_vars=["bin", "ID", "Label"], value_vars=sig, var_name="s").dropna(subset=["value"])
+        long["col"] = long["ID"].astype(str) + "." + long["s"].str.extract(r"Signal_(\d+)")[0]
+        W = long.pivot_table(index="bin", columns="col", values="value", aggfunc="last")
+        W = W.reindex(np.arange(W.index.min(), W.index.max() + 1)).ffill()
+        W = W.loc[:, (W.notna().mean() > 0.5) & (W.std() > 0)]
+        hedef = {c for c in W.columns if int(c.split(".")[0]) in set(d.loc[d["Label"] == 1, "ID"])}
+        rest = W.drop(columns=list(hedef)).std().div(W.drop(columns=list(hedef)).abs().median() + 1e-9).sort_values(ascending=False)
+        cols = sorted(hedef)[:max_cols] + rest.index[:max(0, max_cols - len(hedef))].tolist()
+        W = W[cols]
+        lab = d.groupby("bin")["Label"].max().reindex(W.index).fillna(0).astype(np.int8).to_numpy()
+        name = n.rsplit("/", 1)[1][:-4]
+        yield _seri(f"road/{name}", "road", "automotive", W.index.to_numpy() / hz, W.to_numpy(dtype=float), lab, cols, "row", True,
+                    note=f"ROAD CAN saldırısı {name}; {hz} Hz ızgara; zaman kayıt başlangıcından")
+
 
 
 LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, "smap_msl": load_smap_msl,
@@ -1078,7 +1298,7 @@ LOADERS = {"skab": load_skab, "skab_teaser": load_skab_teaser, "nab": load_nab, 
            "bosch_cnc": load_bosch_cnc, "lbnl": load_lbnl, "ims_bearing": load_ims_bearing, "loghub": load_bgl,
            "binance": load_binance, "ucr": load_ucr, "psm": load_psm, "damadics": load_damadics,
            "asd": load_asd, "uci": load_uci_small, "femto": load_femto, "kantine": load_kantine,
-           "lead": load_lead, "w3": load_w3, "refit": load_refit, "esa_full": load_esa_full, "care": load_care, "msft": load_msft, "ctf": load_ctf}
+           "lead": load_lead, "w3": load_w3, "refit": load_refit, "esa_full": load_esa_full, "care": load_care, "msft": load_msft, "ctf": load_ctf, "ruzgar": load_ruzgar_greenbyte, "battledim": load_battledim, "opssat": load_opssat, "pvfault": load_pvfault, "alfa": load_alfa, "road": load_road}
 
 
 # =============================================================================

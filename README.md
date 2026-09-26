@@ -376,7 +376,12 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - [x] v10 hazırlığı: nihai test ayrımı (görülmemişlerin yarısı seçime girmez), `_downsample` bilinmeyen etiketi korur,
       normal referans tüm ölçeklere aktarılır, tekrarlı zaman damgasında NaN'sız ortalama, ölçek ızgarası (önbellekli),
       `plot()`/`events` kalibre ölçekte eşiklenir, karar eşiği alt sınırı 1e-4, 3W şablonları bankadan çıktı
-- [ ] v10 eğitimi; ablation: `UNKNOWN_WEIGHT` (0.25 / 0.05 / etiketsizi hiç kullanmama), ön eğitim süresi ve maske biçimi: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] v10 base (114M, 30k adım): en iyi 16k; benchmark ort. VUS-PR 0.396 (tek ölçekte bile v9'u geçiyor; UCR hariç 0.450),
+      görülmemiş skor 8k'dan sonra düz, tanıdık skor zorluk 0.8'de düşüyor (sentetiğe aşırı uyum işareti)
+- [x] Veri genişletme: Kelmarsh/Penmanshiel, BattLeDIM, PV arıza, ALFA, OPSSAT-AD, ROAD; otomatik etiket denetimi;
+      `EVAL_ONLY` (eğitimsiz değerlendirme)
+- [ ] UCR için hibrit skor (model + en yakın komşu uyumsuzluğu)
+- [ ] v11 eğitimi; ablation: `UNKNOWN_WEIGHT` (0.25 / 0.05 / etiketsizi hiç kullanmama), ön eğitim süresi ve maske biçimi: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
