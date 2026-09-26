@@ -95,6 +95,22 @@ def aggregate_rows(cell_scores, method="topk", k=3):
     raise ValueError(method)
 
 
+def combine_scales(prob, ups, factors, agg="max"):
+    """Tam çözünürlük skoru + seyreltilmiş ölçek skorları (score_scales). "max": hücre başına en yüksek;
+    "equal": eşit ağırlıklı ortalama; "mean": sırayla yarılama (v9 seçimi; son ölçek ağırlığı 1/2, kaba ölçek baskın)."""
+    used = [ups[int(f)] for f in factors if int(f) in ups]
+    if not used:
+        return prob
+    if agg == "max":
+        return np.maximum.reduce([prob] + used)
+    if agg == "equal":
+        return np.mean([prob] + used, axis=0)
+    out = prob
+    for u in used:
+        out = (out + u) / 2
+    return out
+
+
 def calibrate_rows(scores, temperature=1.0, bias=0.0):
     """GPT-6 Astra: toplulaştırma SONRASI, ayrı gerçek veride öğrenilen satır kalibrasyonu."""
     if temperature == 1.0 and bias == 0.0:
@@ -339,9 +355,21 @@ class AnomaliModel(PreTrainedModel):
         (veya multi_scale) katsayılarıyla seyreltilmiş seri de skorlanır; olasılıklar multi_scale_agg ile birleşir."""
         cfg = self.config
         prob, types = self._score_single(t, X, batch_size, stride, reference)
-        factors = cfg.multi_scale if multi_scale is None else multi_scale
+        factors = list(cfg.multi_scale if multi_scale is None else multi_scale)
+        if factors:
+            ups = self.score_scales(t, X, factors, batch_size, reference=reference)
+            prob = combine_scales(prob, ups, factors, cfg.multi_scale_agg)
+        return prob, types
+
+    def score_scales(self, t, X, factors, batch_size=8, reference=None):
+        """{f: (T, k)} — blok ortalamasıyla f kat seyreltilmiş serinin skoru, tam çözünürlüğe geri açılmış.
+        Yalnızca pencereden (max_t) uzun seride ve n ≥ min_t için hesaplanır. Normal referans verilmişse o da aynı
+        katsayıyla seyreltilir (tüm ölçekler aynı referansa göre normalize); seyreltilmiş referans min_t'den kısa kalırsa
+        o ölçek atlanır (referanslı ve referanssız normalizasyon karışmasın)."""
+        cfg = self.config
         T, k = X.shape
-        for f in factors or ():
+        out = {}
+        for f in factors:
             f = int(f)
             n = T // f
             if T <= cfg.max_t or f < 2 or n < cfg.min_t:
@@ -349,11 +377,18 @@ class AnomaliModel(PreTrainedModel):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)       # tümü NaN blok → NaN (fill_nan doldurur)
                 Xd = np.nanmean(X[:n * f].reshape(n, f, k), axis=1)
-            pd_, _ = self._score_single(np.asarray(t, dtype=np.float64)[:n * f:f], Xd, batch_size, None, None)
+            ref_d = None
+            if reference is not None:
+                nr = len(reference) // f
+                if nr < cfg.min_t:
+                    continue
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    ref_d = np.nanmean(np.asarray(reference, dtype=np.float64)[:nr * f].reshape(nr, f, k), axis=1)
+            pd_, _ = self._score_single(np.asarray(t, dtype=np.float64)[:n * f:f], Xd, batch_size, None, ref_d)
             up = np.repeat(pd_, f, axis=0)
-            up = np.concatenate([up, np.repeat(up[-1:], T - len(up), axis=0)]) if len(up) < T else up
-            prob = np.maximum(prob, up) if cfg.multi_scale_agg == "max" else (prob + up) / 2
-        return prob, types
+            out[f] = np.concatenate([up, np.repeat(up[-1:], T - len(up), axis=0)]) if len(up) < T else up
+        return out
 
     def _score_single(self, t, X, batch_size=8, stride=None, reference=None):
         """Tek çözünürlük. Uzun veri kayan pencere,
@@ -429,11 +464,14 @@ class AnomaliModel(PreTrainedModel):
         row_index = np.empty(len(order), dtype=np.int64)
         row_index[order] = inv
         if len(uniq) < len(t):
+            ok = np.isfinite(X)                                                  # NaN kopya ortalamayı sıfıra çekmesin
             Xa = np.zeros((len(uniq), X.shape[1]))
-            cnt = np.zeros(len(uniq))
-            np.add.at(Xa, inv, np.nan_to_num(X))
-            np.add.at(cnt, inv, 1)
-            X, t = Xa / cnt[:, None], uniq
+            cnt = np.zeros((len(uniq), X.shape[1]))
+            np.add.at(Xa, inv, np.where(ok, X, 0.0))
+            np.add.at(cnt, inv, ok)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                X = np.where(cnt > 0, Xa / np.maximum(cnt, 1), np.nan)
+            t = uniq
         T, k = X.shape
         base = float(getattr(cfg, "row_threshold", 0.5))
         thr = {"low": base + (1 - base) * 0.5, "medium": base, "high": base * 0.6}[sensitivity]

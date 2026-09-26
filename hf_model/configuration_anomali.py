@@ -46,7 +46,7 @@ class AnomaliConfig(PretrainedConfig):
         # skorlanır ve hücre olasılığıyla birleştirilir. Pencereden uzun olaylar (MetroPT: 24 saatlik kompresör arızası =
         # 8.6k satır) normal bağlamıyla tek pencereye sığar. Boş = kapalı; defterdeki teşhis seçer.
         self.multi_scale = list(multi_scale)
-        self.multi_scale_agg = multi_scale_agg        # "max" | "mean"
+        self.multi_scale_agg = multi_scale_agg        # "max" | "equal" (eşit ortalama) | "mean" (sırayla yarılama, kaba ölçek baskın)
         super().__init__(**kwargs)
 
     @property

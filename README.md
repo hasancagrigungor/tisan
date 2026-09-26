@@ -289,6 +289,12 @@ model.push_to_hub("kullanici/anomali-small")
 - **Metrikler:** VUS-PR gibi güvenilir metrikler. Sonuçları şişiren point-adjust kullanılmaz.
 - **Rakipler:** TimeRCD, DADA, TSPulse, MOMENT.
 - **Ablation:** Takvim özellikleri, sütun dikkati, model boyutu gibi kararlar deneyle test edilir.
+- **Seçim ve test ayrımı (v10):** Görülmemiş kaynakların yarısı (`batadal, asd, metropt, pump, w3_val`) model seçiminde
+  kullanılır: checkpoint, satır toplulaştırma, çok ölçek. Diğer yarısı (`lead_val, msft, ctf_val, esa2, care_c`) hiçbir seçime
+  girmez ve en sonda bir kez ölçülür (nihai test). v9 ve öncesindeki "görülmemiş" skorlar seçimde de kullanıldığı için
+  iyimserdir, bağımsız test sonucu olarak okunmamalıdır. Benchmark'lar hiçbir seçimde kullanılmaz.
+- **Alan örtüşmesi:** UCR'nin EKG/fizyolojik serileri (`ucr_fizyo*`) eğitimdeki MIT-BIH/BIDMC ile aynı alandandır ve ayrı raporlanır.
+  MIT-BIH ve CATS TSB-AD'de de bulunduğu için resmi TSB-AD gönderimi bunlar olmadan yeniden eğitim gerektirir.
 
 ---
 
@@ -318,6 +324,13 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
 - Kalan ömür tahmini (RUL) kapsam dışı: etiketli arıza verisi gerektirir ve zero-shot'a aykırıdır.
 - "Anomali" alana göre değişir: hissede %10 sıçrama normal olabilir, sensörde neredeyse kesin arızadır. Bunun için duyarlılık ayarı (`low / medium / high`) ve ileride isteğe bağlı geri bildirim.
 - Az veriden (< 20 satır) güvenilir sonuç çıkmaz.
+- **Olasılık garantisi yok:** Satır skoru birkaç tanıdık kaynakta kalibre edilir ve karar eşiği orada en iyi F1'dir. Yeni
+  sektörde, özellikle anomali oranı çok farklıysa (ör. %35), olasılıklar ve 0/1 kararı aynı davranmaz. Sıralama (hangi satır
+  daha şüpheli) eşikten daha güvenilirdir.
+- Etiketsiz gerçek veri eğitimde düşük ağırlıklı normal varsayılır (`UNKNOWN_WEIGHT`). Havuzdaki gizli arızalar modele kısmen
+  "normal" olarak öğretilir; bu ağırlık ablation ile denetlenmelidir.
+- Bilinen zayıf noktalar: tek "farklı döngü" arayan seriler (UCR), günler süren çok yavaş kaymalar (kireçlenme), sinyalde
+  görünmeyen öngörücü etiketler (CARE).
 - Tanıtım cümlesi: *"Normalden sapmayı ilk göründüğü anda yakalar."* "Arızayı tahmin eder" değil.
 
 ---
@@ -358,7 +371,12 @@ Asıl değer: **binlerce sensör veya metrik var, etiketli anomali verisi yok, h
       CARE öngörücü etiket (güven 0.3); TEP etiketi arızanın ilk 100 satırına indirgendi (görünmez arızalar 3/9/15
       bilinmiyor); anomali oranı > %50 seriler doğrulamadan çıkar; isteğe bağlı çok çözünürlüklü
       skorlama (`multi_scale`, teşhiste seçilir)
-- [ ] v9 eğitimi; ablation: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
+- [x] v9 eğitimi (34M, 8000 adım): çok çözünürlüklü skorlama (4+16×) görülmemiş skoru 0.42 → 0.52, MetroPT 0.18 → 0.92
+      (seçim aynı doğrulamada, iyimser); benchmark ort. VUS-PR 0.359 (v6) → 0.384, 7 setin 6'sında Matrix Profile'ı geçiyor
+- [x] v10 hazırlığı: nihai test ayrımı (görülmemişlerin yarısı seçime girmez), `_downsample` bilinmeyen etiketi korur,
+      normal referans tüm ölçeklere aktarılır, tekrarlı zaman damgasında NaN'sız ortalama, ölçek ızgarası (önbellekli),
+      `plot()`/`events` kalibre ölçekte eşiklenir, karar eşiği alt sınırı 1e-4, 3W şablonları bankadan çıktı
+- [ ] v10 eğitimi; ablation: `UNKNOWN_WEIGHT` (0.25 / 0.05 / etiketsizi hiç kullanmama), ön eğitim süresi ve maske biçimi: ön eğitim, çok ölçekli, RoPE/learned, sentetik payı, tür başlığı, leave-one-domain-out
 - [ ] TSB-AD lider tablosuna gönderim (VUS-PR resmi hesaplayıcıyla)
 - [ ] Benchmark'larda rakiplerle karşılaştırma
 - [x] Kalibrasyon (temperature scaling, defterde)
